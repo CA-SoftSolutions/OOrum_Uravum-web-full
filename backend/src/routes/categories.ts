@@ -131,17 +131,31 @@ router.get('/with-latest', async (req: Request, res: Response) => {
       return;
     }
 
-    const categories = await prisma.category.findMany({
-      where: rootOnly ? { parentId: null } : undefined,
-      select: { id: true, name: true, slug: true, description: true, iconUrl: true, iconKey: true },
+    // Fetch the whole category tree — subcategory articles roll up to their
+    // root category so root cards show the latest article anywhere in the branch.
+    const allCategories = await prisma.category.findMany({
+      select: { id: true, name: true, slug: true, description: true, iconUrl: true, iconKey: true, parentId: true },
       orderBy: { name: 'asc' },
     });
+    const categories = rootOnly ? allCategories.filter((c) => !c.parentId) : allCategories;
+
+    const byId = new Map(allCategories.map((c) => [c.id, c]));
+    const rootIdOf = (id: string): string => {
+      let current = byId.get(id);
+      let last = id;
+      for (let guard = 0; current && guard < 50; guard++) {
+        last = current.id;
+        if (!current.parentId) return current.id;
+        current = byId.get(current.parentId);
+      }
+      return last;
+    };
 
     // Fetch all latest articles in a single query to avoid N+1
-    const categoryIds = categories.map((c) => c.id);
+    const allCategoryIds = allCategories.map((c) => c.id);
     const latestArticles = await prisma.article.findMany({
       where: {
-        categoryId: { in: categoryIds },
+        categoryId: { in: allCategoryIds },
         status: 'PUBLISHED',
       },
       orderBy: [{ publishedAt: 'desc' }, { createdAt: 'desc' }],
@@ -156,16 +170,17 @@ router.get('/with-latest', async (req: Request, res: Response) => {
       },
     });
 
-    // Create a map of categoryId -> latest article
+    // Create a map of categoryId -> latest article (root-aggregated when rootOnly)
     const articleMap = new Map<string, typeof latestArticles[0]>();
     for (const article of latestArticles) {
-      if (!articleMap.has(article.categoryId)) {
-        articleMap.set(article.categoryId, article);
+      const key = rootOnly ? rootIdOf(article.categoryId) : article.categoryId;
+      if (!articleMap.has(key)) {
+        articleMap.set(key, article);
       }
     }
 
     // Map articles to categories
-    const withLatest = categories.map((cat) => ({
+    const withLatest = categories.map(({ parentId: _parentId, ...cat }) => ({
       ...cat,
       article: articleMap.get(cat.id) || null,
     }));

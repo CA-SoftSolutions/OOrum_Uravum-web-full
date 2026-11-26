@@ -304,24 +304,31 @@ export default async function HomePage({ searchParams }: { searchParams: Promise
       : null,
   }));
 
-  /* Add Obituary card to category cards if obituary category exists */
-  if (obituaryCat) {
-    const latestObit = obituaries[0];
-    categoryCards.push({
-      id: obituaryCat.id,
-      name: 'Obituary (அஞ்சலி)',
-      slug: obituaryCat.slug,
-      article: latestObit
-        ? {
-            title: latestObit.name,
-            href: `/obituary/${latestObit.slug}`,
-            excerpt: latestObit.content,
-            image: getObituaryImageUrl(latestObit) || '',
-            publishedAt: latestObit.publishedAt,
-          }
-        : null,
-    });
-  }
+  /* Obituary card — always first, slides through the latest 3 obituaries */
+  const obituarySlides = obituaries.slice(0, 3).map((o) => ({
+    title: o.name,
+    href: `/obituary/${o.slug}`,
+    excerpt: o.content,
+    image: getObituaryImageUrl(o) || null,
+    publishedAt: o.publishedAt,
+  }));
+  const latestObit = obituaries[0];
+  categoryCards.unshift({
+    id: 'obituary-card',
+    name: 'Obituary (அஞ்சலி)',
+    slug: 'obituary',
+    article: latestObit
+      ? {
+          title: latestObit.name,
+          href: `/obituary/${latestObit.slug}`,
+          excerpt: latestObit.content,
+          image: getObituaryImageUrl(latestObit) || '',
+          publishedAt: latestObit.publishedAt,
+        }
+      : null,
+    isObituary: true,
+    slides: obituarySlides,
+  });
 
   const upperContentIds = orderedIds(['videoHero', 'hero', 'topicCards']);
   const feedSectionIds = orderedIds(['obituary', 'latestNews']);

@@ -9,6 +9,7 @@ import { sanitizeText } from '../lib/sanitize';
 import { requireAuth, requireRole, AuthenticatedRequest } from '../lib/auth';
 import { emailVerificationLimits, isEmailDeliveryConfigured, sendSignupVerificationEmail } from '../lib/emailVerification';
 import { verifyGoogleIdentity } from '../lib/googleIdentity';
+import { resolveFrontendUser } from '../lib/frontendUserAuth';
 
 const router = Router();
 const BCRYPT_COST = 12;
@@ -436,12 +437,97 @@ router.get('/me', async (req: Request, res: Response) => {
     const decoded = jwt.verify(authHeader.slice(7), getSecret()) as { userId: string };
     const user = await prisma.frontendUser.findUnique({
       where: { id: decoded.userId },
-      select: { id: true, name: true, email: true, phone: true, avatarUrl: true },
+      select: { id: true, name: true, email: true, phone: true, address: true, avatarUrl: true, createdAt: true },
     });
     if (!user) { res.status(404).json({ error: { code: 'NOT_FOUND', message: 'User not found' } }); return; }
     res.json(user);
   } catch {
     res.status(401).json({ error: { code: 'INVALID_TOKEN', message: 'Invalid or expired token' } });
+  }
+});
+
+// ─── PATCH /me — Update own profile (name, phone, address) ───────────────────
+
+const updateProfileSchema = z.object({
+  name: z.string().min(1, 'Name is required').max(255).transform((v) => sanitizeText(v.trim())),
+  phone: z.string().max(20).optional().nullable(),
+  address: z.string().max(2000).optional().nullable(),
+});
+
+router.patch('/me', async (req: Request, res: Response) => {
+  const user = await resolveFrontendUser(req);
+  if (!user) {
+    res.status(401).json({ error: { code: 'UNAUTHORIZED', message: 'Login is required' } });
+    return;
+  }
+
+  const parsed = updateProfileSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({
+      error: { code: 'VALIDATION_ERROR', message: 'Invalid data', details: parsed.error.flatten().fieldErrors },
+    });
+    return;
+  }
+
+  try {
+    const updated = await prisma.frontendUser.update({
+      where: { id: user.id },
+      data: {
+        name: parsed.data.name,
+        ...(parsed.data.phone !== undefined && { phone: parsed.data.phone || null }),
+        ...(parsed.data.address !== undefined && { address: parsed.data.address || null }),
+      },
+      select: { id: true, name: true, email: true, phone: true, address: true, avatarUrl: true, createdAt: true },
+    });
+    res.json(updated);
+  } catch (err) {
+    console.error('[frontendAuth] PATCH /me error:', err);
+    res.status(500).json({ error: { code: 'INTERNAL_ERROR', message: 'Failed to update profile' } });
+  }
+});
+
+// ─── GET /me/activity — Comments + obituary submissions by this user ─────────
+
+router.get('/me/activity', async (req: Request, res: Response) => {
+  const user = await resolveFrontendUser(req);
+  if (!user) {
+    res.status(401).json({ error: { code: 'UNAUTHORIZED', message: 'Login is required' } });
+    return;
+  }
+
+  try {
+    const [comments, obituaries] = await Promise.all([
+      prisma.comment.findMany({
+        where: { email: user.email },
+        orderBy: { createdAt: 'desc' },
+        take: 100,
+        select: {
+          id: true,
+          displayName: true,
+          content: true,
+          status: true,
+          createdAt: true,
+          article: { select: { id: true, title: true, slug: true } },
+        },
+      }),
+      prisma.obituary.findMany({
+        where: { submitterEmail: user.email },
+        orderBy: { createdAt: 'desc' },
+        take: 100,
+        select: {
+          id: true,
+          name: true,
+          slug: true,
+          status: true,
+          createdAt: true,
+        },
+      }),
+    ]);
+
+    res.json({ comments, obituaries });
+  } catch (err) {
+    console.error('[frontendAuth] GET /me/activity error:', err);
+    res.status(500).json({ error: { code: 'INTERNAL_ERROR', message: 'Failed to load activity' } });
   }
 });
 

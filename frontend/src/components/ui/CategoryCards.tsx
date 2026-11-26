@@ -2,6 +2,8 @@ import Link from 'next/link';
 import { ArticleImage } from '@/components/article/ArticleCard';
 import ObituaryPlaceholder from '@/components/ui/ObituaryPlaceholder';
 import ObituaryPhoto from '@/components/ui/ObituaryPhoto';
+import CategoryCardSlideshow from '@/components/ui/CategoryCardSlideshow';
+import type { CategoryCardSlide } from '@/components/ui/CategoryCardSlideshow';
 
 export interface CategoryCardItem {
   id: string;
@@ -15,6 +17,7 @@ export interface CategoryCardItem {
     publishedAt: string | null;
   } | null;
   isObituary?: boolean; // Flag to identify obituary cards
+  slides?: CategoryCardSlide[]; // When set, the card rotates through these items
 }
 
 function fmtDate(d: string | null): string {
@@ -126,9 +129,18 @@ export default function CategoryCards({ items = [] }: { items?: CategoryCardItem
       </div>
 
       <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-3">
-        {items.map((item) => (
-          <CategoryCard key={item.id} item={item} />
-        ))}
+        {items.map((item) =>
+          item.isObituary && item.slides ? (
+            <CategoryCardSlideshow
+              key={item.id}
+              name={item.name}
+              badgeHref="/obituary"
+              slides={item.slides}
+            />
+          ) : (
+            <CategoryCard key={item.id} item={item} />
+          )
+        )}
       </div>
     </div>
   );

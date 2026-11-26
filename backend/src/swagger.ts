@@ -30,12 +30,12 @@ const obituaryDetailProperties = {
   lifeStory: { type: 'string' },
 };
 
-const spec = {
+export const swaggerSpec = {
   openapi: '3.0.3',
   info: {
     title: 'OORUM URAVUM — Tamil News Platform API',
     version: '1.0.0',
-    description: 'REST API for the Tamil news CMS platform. Provides endpoints for articles, categories, tags, users, media, comments, obituaries, advertisements, settings, and visitor tracking.',
+    description: 'REST API for the Tamil news CMS platform, including content management, frontend authentication, video publishing, notifications, feeds, sitemap data, and visitor statistics.',
   },
   servers: [
     { url: '/api', description: 'API base path' },
@@ -158,7 +158,13 @@ const spec = {
           description: { type: 'string', nullable: true },
           imageUrl: { type: 'string', nullable: true },
           linkUrl: { type: 'string', nullable: true },
-          position: { type: 'string', enum: ['sidebar', 'banner'] },
+          position: { type: 'string', enum: ['sidebar', 'banner', 'header'] },
+          variant: { type: 'string', enum: ['default', 'event', 'book'] },
+          cropPosition: { type: 'string', nullable: true },
+          badge: { type: 'string', nullable: true },
+          metaText: { type: 'string', nullable: true },
+          icon: { type: 'string', nullable: true },
+          linkLabel: { type: 'string', nullable: true },
           active: { type: 'boolean' },
           order: { type: 'integer' },
         },
@@ -235,20 +241,18 @@ const spec = {
         responses: { '201': { description: 'Created', content: { 'application/json': { schema: { $ref: '#/components/schemas/Article' } } } }, '400': { description: 'Validation error' } },
       },
     },
-    '/articles/{slug}': {
+    '/articles/{idOrSlug}': {
       get: {
         tags: ['Articles'],
         summary: 'Get article by slug',
-        parameters: [{ name: 'slug', in: 'path', required: true, schema: { type: 'string' } }],
+        parameters: [{ name: 'idOrSlug', in: 'path', required: true, schema: { type: 'string' }, description: 'Article slug' }],
         responses: { '200': { description: 'Article', content: { 'application/json': { schema: { $ref: '#/components/schemas/Article' } } } }, '404': { description: 'Not found' } },
       },
-    },
-    '/articles/{id}': {
       put: {
         tags: ['Articles'],
         summary: 'Update article',
         security: [{ BearerAuth: [] }],
-        parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
+        parameters: [{ name: 'idOrSlug', in: 'path', required: true, schema: { type: 'string' }, description: 'Article ID' }],
         requestBody: { content: { 'application/json': { schema: { type: 'object', properties: { title: { type: 'string' }, content: { type: 'string' }, excerpt: { type: 'string' }, categoryId: { type: 'string' }, tagIds: { type: 'array', items: { type: 'string' } }, featuredImage: { type: 'string' }, isBreaking: { type: 'boolean' }, status: { type: 'string' } } } } } },
         responses: { '200': { description: 'Updated' }, '404': { description: 'Not found' } },
       },
@@ -256,7 +260,7 @@ const spec = {
         tags: ['Articles'],
         summary: 'Delete article',
         security: [{ BearerAuth: [] }],
-        parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
+        parameters: [{ name: 'idOrSlug', in: 'path', required: true, schema: { type: 'string' }, description: 'Article ID' }],
         responses: { '200': { description: 'Deleted' }, '404': { description: 'Not found' } },
       },
     },
@@ -348,6 +352,7 @@ const spec = {
       post: { tags: ['Advertisements'], summary: 'Create ad (Admin)', security: [{ BearerAuth: [] }], requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', required: ['title'], properties: { title: { type: 'string' }, description: { type: 'string' }, imageUrl: { type: 'string' }, linkUrl: { type: 'string' }, position: { type: 'string', enum: ['sidebar', 'banner', 'header'] }, variant: { type: 'string', enum: ['default', 'event', 'book'] }, badge: { type: 'string' }, metaText: { type: 'string' }, icon: { type: 'string', enum: ['calendar', 'book', 'ticket', 'megaphone', 'gift', 'users', 'heart', 'sparkles', 'star', 'globe'] }, linkLabel: { type: 'string' }, active: { type: 'boolean' } } } } } }, responses: { '201': { description: 'Created' } } },
     },
     '/ads/{id}': {
+      get: { tags: ['Advertisements'], summary: 'Get an advertisement by ID', parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }], responses: { '200': { description: 'Advertisement', content: { 'application/json': { schema: { $ref: '#/components/schemas/Advertisement' } } } }, '404': { description: 'Not found' } } },
       put: { tags: ['Advertisements'], summary: 'Update ad (Admin)', security: [{ BearerAuth: [] }], parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }], responses: { '200': { description: 'Updated' } } },
       delete: { tags: ['Advertisements'], summary: 'Delete ad (Admin)', security: [{ BearerAuth: [] }], parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }], responses: { '200': { description: 'Deleted' } } },
     },
@@ -369,6 +374,123 @@ const spec = {
     '/authors/{slug}': {
       get: { tags: ['Authors'], summary: 'Get author by slug', parameters: [{ name: 'slug', in: 'path', required: true, schema: { type: 'string' } }], responses: { '200': { description: 'Author' }, '404': { description: 'Not found' } } },
     },
+    '/auth/reset-password': {
+      post: { tags: ['Auth'], summary: 'Request a password reset link', requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', required: ['email'], properties: { email: { type: 'string', format: 'email' } } } } } }, responses: { '200': { description: 'Generic confirmation; does not reveal whether the email is registered' }, '400': { description: 'Invalid email' } } },
+    },
+    '/auth/logout': {
+      post: { tags: ['Auth'], summary: 'Log out by discarding client-side tokens', responses: { '200': { description: 'Logout confirmation' } } },
+    },
+    '/media/{id}/image': {
+      get: { tags: ['Media'], summary: 'Get a media image by ID', parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }], responses: { '200': { description: 'Image bytes', content: { 'image/*': { schema: { type: 'string', format: 'binary' } } } }, '404': { description: 'Media not found' } } },
+    },
+    '/comments': {
+      post: { tags: ['Comments'], summary: 'Submit a comment for moderation', requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', required: ['articleId', 'displayName', 'email', 'content'], properties: { articleId: { type: 'string' }, displayName: { type: 'string' }, email: { type: 'string', format: 'email' }, content: { type: 'string' } } } } } }, responses: { '201': { description: 'Comment accepted for moderation' }, '400': { description: 'Validation error' }, '404': { description: 'Article not found' } } },
+    },
+    '/comments/{articleId}': {
+      get: { tags: ['Comments'], summary: 'List approved comments for an article', parameters: [{ name: 'articleId', in: 'path', required: true, schema: { type: 'string' } }, { name: 'page', in: 'query', schema: { type: 'integer', minimum: 1, default: 1 } }], responses: { '200': { description: 'Paginated approved comments' } } },
+    },
+    '/ingest': {
+      post: { tags: ['Ingest'], summary: 'Ingest an article (Admin)', security: [{ BearerAuth: [] }], requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', required: ['title', 'content', 'sourceUrl', 'categoryId', 'authorId'], properties: { title: { type: 'string' }, content: { type: 'string' }, excerpt: { type: 'string' }, sourceUrl: { type: 'string', format: 'uri' }, categoryId: { type: 'string' }, authorId: { type: 'string' }, tagIds: { type: 'array', items: { type: 'string' } }, featuredImage: { type: 'string' }, isBreaking: { type: 'boolean' }, status: { type: 'string', enum: ['DRAFT', 'PUBLISHED'] } } } } } }, responses: { '201': { description: 'Article created' }, '400': { description: 'Validation error or invalid category/author' }, '409': { description: 'Duplicate source URL or title' } } },
+    },
+    '/ads/meta/icons': {
+      get: {
+        tags: ['Advertisements'],
+        summary: 'List supported advertisement icons, variants, and positions',
+        responses: {
+          '200': {
+            description: 'Available values',
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: {
+                    icons: { type: 'array', items: { type: 'string' } },
+                    variants: { type: 'array', items: { type: 'string' } },
+                    positions: { type: 'array', items: { type: 'string' } },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+    '/videos/categories': {
+      get: { tags: ['Videos'], summary: 'List video categories', responses: { '200': { description: 'Video category array' } } },
+      post: { tags: ['Videos'], summary: 'Create a video category', security: [{ BearerAuth: [] }], requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', required: ['name', 'slug'], properties: { name: { type: 'string' }, slug: { type: 'string' } } } } } }, responses: { '201': { description: 'Created' }, '400': { description: 'Validation error' } } },
+    },
+    '/videos/categories/{id}': {
+      delete: { tags: ['Videos'], summary: 'Delete a video category (Admin)', security: [{ BearerAuth: [] }], parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }], responses: { '200': { description: 'Deleted' } } },
+    },
+    '/videos': {
+      get: { tags: ['Videos'], summary: 'List videos (public requests receive active videos only)', responses: { '200': { description: 'Video array' } } },
+      post: { tags: ['Videos'], summary: 'Create a video (Admin/Editor)', security: [{ BearerAuth: [] }], requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', required: ['title', 'videoUrl'], properties: { title: { type: 'string' }, description: { type: 'string' }, videoUrl: { type: 'string', format: 'uri' }, thumbnailUrl: { type: 'string' }, platform: { type: 'string', enum: ['youtube', 'vimeo', 'dailymotion', 'other'] }, active: { type: 'boolean' }, order: { type: 'number' }, categoryId: { type: 'string', nullable: true } } } } } }, responses: { '201': { description: 'Created' }, '400': { description: 'Validation error' } } },
+    },
+    '/videos/{idOrSlug}': {
+      get: { tags: ['Videos'], summary: 'Get a video by ID or slug', parameters: [{ name: 'idOrSlug', in: 'path', required: true, schema: { type: 'string' } }], responses: { '200': { description: 'Video' }, '404': { description: 'Not found' } } },
+      put: { tags: ['Videos'], summary: 'Update a video (Admin/Editor)', security: [{ BearerAuth: [] }], parameters: [{ name: 'idOrSlug', in: 'path', required: true, schema: { type: 'string' }, description: 'Video ID' }], requestBody: { content: { 'application/json': { schema: { type: 'object', properties: { title: { type: 'string' }, description: { type: 'string' }, videoUrl: { type: 'string', format: 'uri' }, thumbnailUrl: { type: 'string' }, platform: { type: 'string', enum: ['youtube', 'vimeo', 'dailymotion', 'other'] }, active: { type: 'boolean' }, order: { type: 'number' }, categoryId: { type: 'string', nullable: true } } } } } }, responses: { '200': { description: 'Updated' }, '400': { description: 'Validation error' } } },
+      delete: { tags: ['Videos'], summary: 'Delete a video (Admin)', security: [{ BearerAuth: [] }], parameters: [{ name: 'idOrSlug', in: 'path', required: true, schema: { type: 'string' }, description: 'Video ID' }], responses: { '200': { description: 'Deleted' } } },
+    },
+    '/public-auth/config': {
+      get: { tags: ['Public Auth'], summary: 'Get frontend authentication configuration', responses: { '200': { description: 'Configuration including the Google client ID' } } },
+    },
+    '/public-auth/register/request-code': {
+      post: { tags: ['Public Auth'], summary: 'Request an email verification code', requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', required: ['name', 'email', 'password', 'confirmPassword'], properties: { name: { type: 'string' }, email: { type: 'string', format: 'email' }, phone: { type: 'string' }, address: { type: 'string' }, password: { type: 'string', minLength: 6 }, confirmPassword: { type: 'string' } } } } } }, responses: { '200': { description: 'Verification code sent' }, '400': { description: 'Validation error' }, '429': { description: 'Rate limit exceeded' }, '503': { description: 'Email verification is not configured' } } },
+    },
+    '/public-auth/register/verify-code': {
+      post: { tags: ['Public Auth'], summary: 'Verify code and complete registration', requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', required: ['name', 'email', 'password', 'confirmPassword', 'verificationCode'], properties: { name: { type: 'string' }, email: { type: 'string', format: 'email' }, phone: { type: 'string' }, address: { type: 'string' }, password: { type: 'string', minLength: 6 }, confirmPassword: { type: 'string' }, verificationCode: { type: 'string', pattern: '^\\\\d{6}$' } } } } } }, responses: { '201': { description: 'Registered' }, '400': { description: 'Invalid or expired verification code' }, '409': { description: 'Email already registered' } } },
+    },
+    '/public-auth/google': {
+      post: { tags: ['Public Auth'], summary: 'Sign in or register with a Google identity token', requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', required: ['credential'], properties: { credential: { type: 'string', description: 'Google ID token' } } } } } }, responses: { '200': { description: 'Authenticated frontend user and JWT' }, '400': { description: 'Invalid Google credential' }, '429': { description: 'Rate limit exceeded' } } },
+    },
+    '/public-auth/login': {
+      post: { tags: ['Public Auth'], summary: 'Log in a frontend user', requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', required: ['email', 'password'], properties: { email: { type: 'string', format: 'email' }, password: { type: 'string' } } } } } }, responses: { '200': { description: 'Authenticated frontend user and JWT' }, '401': { description: 'Invalid credentials' }, '423': { description: 'Account locked' }, '429': { description: 'Rate limit exceeded' } } },
+    },
+    '/public-auth/me': {
+      get: { tags: ['Public Auth'], summary: 'Get the current frontend user', security: [{ BearerAuth: [] }], responses: { '200': { description: 'Current user profile' }, '401': { description: 'Missing or invalid bearer token' }, '404': { description: 'User not found' } } },
+    },
+    '/public-auth/admin/list': {
+      get: { tags: ['Public Auth'], summary: 'List frontend users (Admin)', security: [{ BearerAuth: [] }], parameters: [{ name: 'page', in: 'query', schema: { type: 'integer', minimum: 1 } }, { name: 'pageSize', in: 'query', schema: { type: 'integer', minimum: 1, maximum: 100 } }], responses: { '200': { description: 'Paginated frontend users' } } },
+    },
+    '/public-auth/admin/{id}/toggle': {
+      put: { tags: ['Public Auth'], summary: 'Enable or disable a frontend user (Admin)', security: [{ BearerAuth: [] }], parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }], responses: { '200': { description: 'User status updated' }, '404': { description: 'User not found' } } },
+    },
+    '/public-auth/admin/{id}/unlock': {
+      put: { tags: ['Public Auth'], summary: 'Unlock a frontend user account (Admin)', security: [{ BearerAuth: [] }], parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }], responses: { '200': { description: 'User unlocked' }, '404': { description: 'User not found' } } },
+    },
+    '/public-auth/admin/{id}': {
+      delete: { tags: ['Public Auth'], summary: 'Delete a frontend user (Admin)', security: [{ BearerAuth: [] }], parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }], responses: { '200': { description: 'Deleted' }, '404': { description: 'User not found' } } },
+    },
+    '/notifications': {
+      get: { tags: ['Notifications'], summary: 'List admin/editor notifications', security: [{ BearerAuth: [] }], responses: { '200': { description: 'Notification array' } } },
+    },
+    '/notifications/unread-count': {
+      get: { tags: ['Notifications'], summary: 'Get unread notification count', security: [{ BearerAuth: [] }], responses: { '200': { description: 'Unread count' } } },
+    },
+    '/notifications/{id}/read': {
+      put: { tags: ['Notifications'], summary: 'Mark a notification as read', security: [{ BearerAuth: [] }], parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }], responses: { '200': { description: 'Updated' }, '404': { description: 'Notification not found' } } },
+    },
+    '/notifications/read-all': {
+      put: { tags: ['Notifications'], summary: 'Mark all notifications as read', security: [{ BearerAuth: [] }], responses: { '200': { description: 'Updated' } } },
+    },
+    '/dashboard/stats': {
+      get: { tags: ['Dashboard'], summary: 'Get dashboard statistics (Admin/Editor)', security: [{ BearerAuth: [] }], responses: { '200': { description: 'Counts for articles, comments, and other dashboard metrics' } } },
+    },
+    '/feed/rss': {
+      get: { tags: ['Feeds'], summary: 'Get the RSS feed', responses: { '200': { description: 'RSS XML', content: { 'application/rss+xml': { schema: { type: 'string' } } } } } },
+    },
+    '/feed/json': {
+      get: { tags: ['Feeds'], summary: 'Get the JSON Feed', responses: { '200': { description: 'JSON Feed document' } } },
+    },
+    '/sitemap': {
+      get: { tags: ['Sitemap'], summary: 'List sitemap entries', responses: { '200': { description: 'Array of public URLs and update metadata' } } },
+    },
+    '/health': {
+      get: { tags: ['System'], summary: 'Check API process health', responses: { '200': { description: 'Health status and timestamp' } } },
+    },
+    '/docs.json': {
+      get: { tags: ['System'], summary: 'Get the OpenAPI specification as JSON', responses: { '200': { description: 'OpenAPI document', content: { 'application/json': { schema: { type: 'object' } } } } } },
+    },
   },
   tags: [
     { name: 'Auth', description: 'Authentication endpoints' },
@@ -384,13 +506,21 @@ const spec = {
     { name: 'Visitors', description: 'Visitor tracking' },
     { name: 'Search', description: 'Public article, obituary, and video search' },
     { name: 'Authors', description: 'Author profiles' },
+    { name: 'Public Auth', description: 'Authentication for frontend/customer accounts' },
+    { name: 'Videos', description: 'Video categories and video content' },
+    { name: 'Notifications', description: 'Admin/editor notifications' },
+    { name: 'Dashboard', description: 'Administrative dashboard statistics' },
+    { name: 'Feeds', description: 'RSS and JSON feeds' },
+    { name: 'Ingest', description: 'Trusted article ingestion' },
+    { name: 'Sitemap', description: 'Generated sitemap entries' },
+    { name: 'System', description: 'Health and API documentation endpoints' },
   ],
 };
 
 export function setupSwagger(app: Express) {
-  app.use('/api/docs', swaggerUi.serve, swaggerUi.setup(spec, {
+  app.use('/api/docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec, {
     customCss: '.swagger-ui .topbar { display: none }',
     customSiteTitle: 'OORUM URAVUM API Docs',
   }));
-  app.get('/api/docs.json', (_req, res) => res.json(spec));
+  app.get('/api/docs.json', (_req, res) => res.json(swaggerSpec));
 }

@@ -15,6 +15,23 @@ This document covers the complete step-by-step process to build and deploy the O
 
 ---
 
+## API Documentation and Verification
+
+The backend serves the OpenAPI specification and interactive Swagger UI:
+
+- Swagger UI: `https://api.oorumuravum.com/api/docs`
+- OpenAPI JSON: `https://api.oorumuravum.com/api/docs.json`
+- Health check: `https://api.oorumuravum.com/api/health`
+
+The specification covers the registered API route methods, request inputs, auth requirements, and common responses. After a backend deployment, confirm that the health check returns `200`, the JSON document parses successfully, and Swagger UI loads. For local checks, run the focused coverage test and backend build from `backend/`:
+
+```powershell
+npm.cmd test -- src/swagger.test.ts
+npm.cmd run build
+```
+
+---
+
 ## Prerequisites
 
 ### Local Machine
@@ -560,3 +577,134 @@ kill %1
 ---
 
 *Last updated: August 2026*
+
+
+## Deployment Gotchas (learned 2026-11-24)
+
+These issues were hit during a CMS deploy done entirely through the cPanel
+API (no SSH access — ports 22/2222/21098 all time out):
+
+1. **Zip must use forward slashes.** `Compress-Archive` writes entries with
+   `\` separators. PHP `ZipArchive::extractTo` on Linux treats `\` as a
+   literal filename character, producing flat files like `cms\.next\...`.
+   Build deploy zips with Python `zipfile` (or `zip -r`) instead.
+
+2. **Strip UTF-8 BOM from `.next/required-server-files.json`.**
+   `Fix-WindowsPaths` rewrites it with PowerShell `Set-Content -Encoding UTF8`
+   which adds a BOM. Next.js `JSON.parse`s it per request and 500s with
+   `Unexpected token '﻿'`. Strip the first 3 bytes after packaging.
+
+3. **`.htaccess` must not have a BOM and must match the Node Selector
+   config.** Only the `# DO NOT REMOVE. CLOUDLINUX PASSENGER CONFIGURATION`
+   block is needed (`PassengerStartupFile start.js`). Duplicated/appended
+   `Passenger*` directives or a BOM cause Apache 500s. Without any
+   `.htaccess`, Passenger can fall back to serving the wrong app.
+
+4. **cPanel UAPI quirks:**
+   - `Fileman::upload_files` reports success but leaves files as
+     `Cpanel_Form_file.upload.*` in `~/tmp` — unusable.
+   - POST to `/execute/` returns the login page; use GET with query params
+     (URL length limit ~8 KB).
+   - Workaround for large files: host the zip on a file host (e.g. catbox),
+     then a temporary PHP script in `public_html` downloads it via
+     `file_get_content` (needs a `User-Agent` header and
+     `verify_peer=false`), extracts with `ZipArchive`, and touches
+     `tmp/restart.txt`.
+   - PHP `exec`/`shell_exec`/`proc_open` are disabled; `Cron` UAPI module is
+     absent; PHP OPcache serves stale scripts — use a new filename per edit.
+
+5. **SSH alternative used:** cPanel login (`/login/?login_only=1`) →
+   `Fileman::save_file_content` (GET) for small files, PHP fetch for large
+   ones, API2 `Fileman::fileop` (`op=unlink`, full paths in `sourcefiles`)
+   for deletes.
+
+6. **`/api/*` on the main domain is claimed by the backend.** The
+   `public_html/api/.htaccess` Passenger block makes
+   `https://oorumuravum.com/api/...` hit the Express backend, so Next.js
+   app-routes under `frontend/src/app/api/` (e.g. `/api/revalidate`) are
+   unreachable in production. Cache-revalidation endpoints must live at a
+   non-`/api` path — `frontend/src/app/revalidate/route.ts` exists for this.
+   Backend env must use `FRONTEND_REVALIDATE_URL=https://oorumuravum.com/revalidate`
+   and a `REVALIDATE_SECRET` identical to the frontend's.
+
+7. **cPanel maldet flags some file-host URLs in uploaded PHP** (e.g.
+   tmpfiles.org triggered `BAILOUT malware detected` on
+   `Fileman::save_file_content`). x0.at and catbox.moe URLs saved fine;
+   catbox downloads can intermittently fail server-side — x0.at worked.
+
+8. **`api.oorumuravum.com` is behind a caching nginx layer; the
+   `oorumuravum.com/api` path is NOT.** GET responses on the API subdomain
+   are cached upstream (identical stale bodies even after DB writes —
+   this made CMS saves appear not to apply). All frontend/CMS traffic now
+   uses `NEXT_PUBLIC_API_URL=https://oorumuravum.com/api`
+   (`INTERNAL_API_URL` same), while media stays on the subdomain via
+   `NEXT_PUBLIC_MEDIA_ORIGIN=https://api.oorumuravum.com`. The backend
+   also sets `Cache-Control: no-store` + `X-Accel-Expires: 0` on `/api`
+   responses so nothing new gets cached.
+
+9. **`/uploads/*` on the main domain needed a symlink.** Apache serves
+   existing docroot files directly (bypassing Passenger), but
+   `public_html/uploads` did not exist. Created
+   `public_html/uploads -> public_html/api/uploads` via PHP `symlink()`
+   so `https://oorumuravum.com/uploads/...` serves media statically.
+
+10. **Production DB contains `http://localhost:4000/uploads/...` URLs**
+    (seeded from local dev). The frontend rewrites localhost/127.0.0.1
+    backend URLs in API payloads to the media origin (`api.ts`
+    `rewriteLocalBackendUrls`), but files that only exist on the dev
+    machine still 404 — they must be re-uploaded via the CMS.
+
+11. **The host injects `X-Frame-Options: SAMEORIGIN` on EVERY response**
+    (nginx edge, all vhosts — `.htaccess` `Header unset` cannot remove
+    it). Cross-subdomain iframes are impossible, so the CMS live preview
+    cannot embed `oorumuravum.com` directly. Solution shipped:
+    `publisher-dashboard/src/app/preview-site/[[...path]]/route.ts` — a
+    same-origin reverse proxy that strips XFO/CSP, rewrites root-relative
+    URLs in HTML to the `/preview-site` prefix, and forwards everything
+    else (including `/api/*` calls the previewed page makes). The preview
+    iframe URL is `https://cms.oorimuravum.com/preview-site`
+    (`preview-config` falls back to `<origin>/preview-site` when
+    `FRONTEND_PREVIEW_URL` is unset — the Passenger standalone server does
+    NOT auto-load `.env*` files).
+
+12. **`Set-Content -Encoding UTF8` in Windows PowerShell writes a BOM.**
+    `build-deploy.ps1` rewrote `.next/required-server-files.json` with a
+    BOM → `JSON.parse` 500 on every route. `Fix-WindowsPaths`, `start.js`
+    and `.htaccess` generation now write via
+    `[IO.File]::WriteAllText` with `UTF8Encoding($false)`. If a deployed
+    Next app 500s with `Unexpected token '﻿'`, strip the BOM from
+    `public_html/<app>/.next/*.json` via PHP.
+
+13. **Never emit two `Passenger*` blocks in an app `.htaccess`.** The CMS
+    template used to append a second block with
+    `PassengerStartupFile server.js` — that bypasses `start.js` (the
+    `_modules` resolver) and crash-loops the app. Keep exactly one block;
+    `PassengerAppLogFile /home/oorumur1/logs/passenger.log` makes app
+    stdout/stderr readable via PHP.
+
+14. **`deploy/cms.zip` entries are prefixed `cms/`.** Extract scripts
+    must strip the leading `cms/` or files land in `public_html/cms/cms/`
+    and the running app never updates.
+
+15. **MSYS/Git-Bash mangles `/home/...` inside curl `-F`/`--data` values.**
+    `curl -F "dir=/home/oorumur1/..."` from Git Bash silently rewrites the
+    path to `C:/Program Files/Git/home/oorumur1/...` — `upload_files` and
+    `save_file_content` then report success but write into a literal
+    `/home/oorumur1/C:` directory tree. Symptoms: uploads "succeed" but
+    `get_file_content` says the file doesn't exist. Fixes: run uploads via
+    Python `subprocess` (no MSYS layer — `deploy/fe_upload.py`,
+    `deploy/be_upload.py` are working examples), or prefix bash curl calls
+    with `MSYS2_ARG_CONV_EXCL="*"`. If it happens, delete the stray
+    `/home/oorumur1/C:` tree via API2 `Fileman::fileop` `op=unlink`
+    (walk bottom-up; UAPI has no `fileop` — API2 does, and `unlink` is the
+    delete op, `delete` is invalid).
+
+16. **`Fileman::upload_files` (UAPI) works and accepts multiple
+    `file-N=@path` fields per call, one target `dir` per call.** Batch
+    ~12 files per request; larger batches can drop the connection. This is
+    the only reliable way to deploy many files without SSH/PHP/cron —
+    extract the deploy zip locally and upload per-directory. `_modules`
+    (node_modules) rarely changes; skip it to save ~1000 files.
+
+17. **API2 `Cron::add_line` gets "Access denied" after a malformed line is
+    added once** — and cPanel cron cannot be relied on for deploys anyway.

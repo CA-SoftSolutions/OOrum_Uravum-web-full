@@ -244,30 +244,46 @@ describe('GET /api/categories/with-latest', () => {
     });
   });
 
-  it('filters to root categories and selects only the fields the cards need', async () => {
+  it('fetches the full category tree and filters roots in memory', async () => {
     mockCategoryFindMany.mockResolvedValue([]);
     mockArticleFindMany.mockResolvedValue([]);
 
     await request(createApp()).get('/api/categories/with-latest');
 
     expect(mockCategoryFindMany).toHaveBeenCalledWith({
-      where: { parentId: null },
-      select: { id: true, name: true, slug: true, description: true, iconUrl: true, iconKey: true },
+      select: { id: true, name: true, slug: true, description: true, iconUrl: true, iconKey: true, parentId: true },
       orderBy: { name: 'asc' },
     });
   });
 
   it('includes child categories when rootOnly=false', async () => {
-    mockCategoryFindMany.mockResolvedValue([]);
+    mockCategoryFindMany.mockResolvedValue([
+      { id: 'cat-root', name: 'Root', slug: 'root', description: null, parentId: null },
+      { id: 'cat-child', name: 'Child', slug: 'child', description: null, parentId: 'cat-root' },
+    ]);
     mockArticleFindMany.mockResolvedValue([]);
 
-    await request(createApp()).get('/api/categories/with-latest?rootOnly=false');
+    const res = await request(createApp()).get('/api/categories/with-latest?rootOnly=false');
 
-    expect(mockCategoryFindMany).toHaveBeenCalledWith({
-      where: undefined,
-      select: { id: true, name: true, slug: true, description: true, iconUrl: true, iconKey: true },
-      orderBy: { name: 'asc' },
-    });
+    expect(res.body.map((c: any) => c.id)).toEqual(['cat-root', 'cat-child']);
+    expect(res.body[0]).not.toHaveProperty('parentId');
+  });
+
+  it('rolls subcategory articles up to the root category card', async () => {
+    mockCategoryFindMany.mockResolvedValue([
+      { id: 'cat-root', name: 'Root', slug: 'root', description: null, parentId: null },
+      { id: 'cat-child', name: 'Child', slug: 'child', description: null, parentId: 'cat-root' },
+    ]);
+    mockArticleFindMany.mockResolvedValue([
+      { ...latestArticle, categoryId: 'cat-child' },
+    ]);
+
+    const res = await request(createApp()).get('/api/categories/with-latest');
+
+    expect(res.status).toBe(200);
+    expect(res.body).toHaveLength(1);
+    expect(res.body[0].id).toBe('cat-root');
+    expect(res.body[0].article.title).toBe(latestArticle.title);
   });
 
   it('queries only published articles, newest first', async () => {

@@ -339,12 +339,12 @@ export default function Header({ initialCategories = [] }: { initialCategories?:
                 if (e.currentTarget.src.endsWith(DEFAULT_LOGO_SRC)) return;
                 e.currentTarget.src = DEFAULT_LOGO_SRC;
               }}
-              className="h-11 w-auto max-w-[100px] object-contain md:h-20 md:max-w-[225px] shrink-0" />
-            <div className="hidden sm:flex flex-col">
-              <span className="text-xl md:text-2xl font-extrabold text-white tracking-wide leading-tight">
+              className="h-[75px] w-auto max-w-[170px] object-contain md:h-20 md:max-w-[225px] shrink-0" />
+            <div className="flex min-w-0 flex-col">
+              <span className="truncate text-base font-extrabold text-white tracking-wide leading-tight sm:text-xl md:text-2xl">
                 {displaySiteName}
               </span>
-              <span className="text-[11px] text-white/50 tracking-wide">{displayTagline}</span>
+              <span className="hidden text-[11px] text-white/50 tracking-wide sm:block">{displayTagline}</span>
             </div>
           </Link>
 
@@ -382,6 +382,10 @@ export default function Header({ initialCategories = [] }: { initialCategories?:
                         <p className="text-sm font-semibold text-gray-900 truncate">{user.name}</p>
                         <p className="text-xs text-gray-500 truncate">{user.email}</p>
                       </div>
+                      <Link href="/profile" onClick={() => setUserMenuOpen(false)}
+                        className="block px-3 py-2 text-sm text-gray-700 hover:bg-gray-50">
+                        சுயவிவரம்
+                      </Link>
                       <Link href="/submit-obituary" onClick={() => setUserMenuOpen(false)}
                         className="block px-3 py-2 text-sm text-gray-700 hover:bg-gray-50">
                         Obituary (அஞ்சலி)
@@ -482,14 +486,14 @@ export default function Header({ initialCategories = [] }: { initialCategories?:
                 <svg className="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 20 20">
                   <path d="M10.707 2.293a1 1 0 00-1.414 0l-7 7a1 1 0 001.414 1.414L4 10.414V17a1 1 0 001 1h2a1 1 0 001-1v-2a1 1 0 011-1h2a1 1 0 011 1v2a1 1 0 001 1h2a1 1 0 001-1v-6.586l.293.293a1 1 0 001.414-1.414l-7-7z" />
                 </svg>
-                முகப்பு
+                Home (முகப்பு)
               </Link>
               <Link href="/videos"
                 className="flex shrink-0 items-center gap-1.5 px-3 text-[13px] font-semibold text-white/85 hover:text-white hover:bg-white/10 transition-colors">
                 <svg className="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 20 20">
                   <path d="M2 6a2 2 0 012-2h6a2 2 0 012 2v8a2 2 0 01-2 2H4a2 2 0 01-2-2V6zm12.553 1.106A1 1 0 0014 8v4a1 1 0 00.553.894l2 1A1 1 0 0018 13V7a1 1 0 00-1.447-.894l-2 1z" />
                 </svg>
-                வீடியோ
+                Videos (வீடியோ)
               </Link>
               {rootCats.map((cat) => <DesktopNavItem key={cat.slug} cat={cat} />)}
               {categoriesError && categories.length === 0 && (
@@ -531,11 +535,11 @@ export default function Header({ initialCategories = [] }: { initialCategories?:
               <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
                 <path d="M10.707 2.293a1 1 0 00-1.414 0l-7 7a1 1 0 001.414 1.414L4 10.414V17a1 1 0 001 1h2a1 1 0 001-1v-2a1 1 0 011-1h2a1 1 0 011 1v2a1 1 0 001 1h2a1 1 0 001-1v-6.586l.293.293a1 1 0 001.414-1.414l-7-7z" />
               </svg>
-              முகப்பு
+              Home (முகப்பு)
             </Link>
             <Link href="/videos" onClick={() => setMenuOpen(false)}
               className="block px-5 py-3 text-[13px] font-semibold text-white/85 hover:text-white hover:bg-white/8 border-b border-white/8">
-              வீடியோ
+              Videos (வீடியோ)
             </Link>
             {rootCats.map((cat) => (
               <MobileNavItem key={cat.slug} cat={cat} onClose={() => setMenuOpen(false)} />
@@ -576,6 +580,10 @@ export default function Header({ initialCategories = [] }: { initialCategories?:
                   <span className="text-sm text-white/80">{user.name}</span>
                 </div>
                 <div className="flex gap-2">
+                  <Link href="/profile" onClick={() => setMenuOpen(false)}
+                    className="bg-foreground/10 text-white px-3 py-1.5 rounded text-xs font-bold">
+                    சுயவிவரம்
+                  </Link>
                   <Link href="/submit-obituary" onClick={() => setMenuOpen(false)}
                     className="bg-accent-red text-white px-3 py-1.5 rounded text-xs font-bold">
                     பதிவிடு

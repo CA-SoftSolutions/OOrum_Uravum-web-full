@@ -24,6 +24,11 @@ vi.mock('../lib/prisma', () => ({
   },
 }));
 
+// Disable rate limiting in tests
+vi.mock('express-rate-limit', () => ({
+  default: () => (_req: any, _res: any, next: any) => next(),
+}));
+
 // Mock cache
 const mockInvalidateByTags = vi.fn();
 
@@ -71,6 +76,32 @@ vi.mock('../lib/auth', () => ({
     next();
   },
   AuthenticatedRequest: {},
+}));
+
+// Mock public-site user auth (used by POST /submit)
+vi.mock('../lib/frontendUserAuth', () => ({
+  requireFrontendUser: (req: any, res: any, next: any) => {
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({
+        error: { code: 'UNAUTHORIZED', message: 'Login is required to perform this action' },
+      });
+    }
+    if (authHeader === 'Bearer invalid-token') {
+      return res.status(401).json({
+        error: { code: 'UNAUTHORIZED', message: 'Invalid or expired token' },
+      });
+    }
+    req.frontendUser = {
+      id: 'fu-1',
+      name: 'Signed-in Test User',
+      email: 'author@test.com',
+      phone: null,
+      address: null,
+      avatarUrl: null,
+    };
+    next();
+  },
 }));
 
 // ─── Test App Setup ──────────────────────────────────────────────────────────
@@ -177,6 +208,18 @@ describe('GET /api/obituaries', () => {
 });
 
 describe('POST /api/obituaries/submit', () => {
+  it('requires login (401 without a user token)', async () => {
+    const app = createApp();
+    const res = await request(app)
+      .post('/api/obituaries/submit')
+      .field('firstName', 'Test Person')
+      .field('dateOfDeath', '2020-01-01');
+
+    expect(res.status).toBe(401);
+    expect(res.body.error.code).toBe('UNAUTHORIZED');
+    expect(mockObituaryCreate).not.toHaveBeenCalled();
+  });
+
   it('stores the submitted photo and keeps the obituary pending review', async () => {
     mockObituaryCreate.mockResolvedValue({
       ...sampleObituary,
@@ -186,6 +229,7 @@ describe('POST /api/obituaries/submit', () => {
     const app = createApp();
     const res = await request(app)
       .post('/api/obituaries/submit')
+      .set('Authorization', 'Bearer user-token')
       .field('firstName', 'Test Person')
       .field('dateOfDeath', '2020-01-01')
       .field('lifeStory', 'A life story')
@@ -199,8 +243,8 @@ describe('POST /api/obituaries/submit', () => {
       expect.objectContaining({
         data: expect.objectContaining({
           status: 'PENDING',
-          submitterName: 'Anonymous',
-          submitterEmail: null,
+          submitterName: 'Signed-in Test User',
+          submitterEmail: 'author@test.com',
           firstName: 'Test Person',
           lifeStory: 'A life story',
           imageMimeType: 'image/png',
@@ -220,7 +264,6 @@ describe('POST /api/obituaries/submit', () => {
     const res = await request(app)
       .post('/api/obituaries/submit')
       .set('Authorization', 'Bearer test-token')
-      .set('x-test-user', authorUser)
       .field('firstName', 'Test Person')
       .field('dateOfDeath', '2020-01-01')
       .field('submitterName', 'Forged Name')
@@ -237,7 +280,7 @@ describe('POST /api/obituaries/submit', () => {
     );
   });
 
-  it('rejects an invalid supplied token instead of silently submitting anonymously', async () => {
+  it('rejects an invalid supplied token', async () => {
     const app = createApp();
     const res = await request(app)
       .post('/api/obituaries/submit')

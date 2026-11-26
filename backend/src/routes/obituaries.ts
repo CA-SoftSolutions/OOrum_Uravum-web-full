@@ -4,6 +4,7 @@ import multer from 'multer';
 import rateLimit from 'express-rate-limit';
 import { prisma } from '../lib/prisma';
 import { requireAuth, requireRole, AuthenticatedRequest } from '../lib/auth';
+import { requireFrontendUser, FrontendAuthenticatedRequest } from '../lib/frontendUserAuth';
 import { invalidateByTags } from '../lib/cache';
 import { generateUniqueSlug } from '../lib/slug';
 import { revalidateFrontend } from '../lib/revalidate';
@@ -286,7 +287,7 @@ router.get('/:id/image', async (req: Request, res: Response) => {
 router.post(
   '/submit',
   submitRateLimiter,
-  authenticateIfProvided,
+  requireFrontendUser,
   (req: Request, res: Response, next) => {
     upload.single('photo')(req, res, (err) => {
       if (err) {
@@ -300,7 +301,7 @@ router.post(
       next();
     });
   },
-  async (req: AuthenticatedRequest, res: Response) => {
+  async (req: FrontendAuthenticatedRequest, res: Response) => {
     const parsed = publicSubmitSchema.safeParse(req.body);
     if (!parsed.success) {
       res.status(400).json({
@@ -311,8 +312,8 @@ router.post(
 
     try {
       const data = parsed.data;
-      const submitterName = req.user?.name?.trim() || 'Anonymous';
-      const submitterEmail = req.user?.email || null;
+      const submitterName = req.frontendUser!.name;
+      const submitterEmail = req.frontendUser!.email;
 
       // Build display name from firstName + surname (or legacy name field)
       const displayName = [data.firstName, data.middleName, data.surname]

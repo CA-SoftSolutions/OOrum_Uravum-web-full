@@ -15,6 +15,7 @@ const quickLinks = [
   { label: 'வீடியோ',           href: '/videos' },
   { label: 'Obituary (அஞ்சலி)',         href: '/obituary' },
   { label: 'எங்களைப் பற்றி',   href: '/about' },
+  { label: 'Objective',        href: '/objective' },
   { label: 'தொடர்பு',          href: '/contact' },
   { label: 'Submit Obituary (அஞ்சலி)', href: '/submit-obituary' },
   { label: 'தனியுரிமை',       href: '/privacy' },

@@ -1,10 +1,24 @@
 import { Router, Response, Request } from 'express';
+import rateLimit from 'express-rate-limit';
 import { z } from 'zod';
 import { prisma } from '../lib/prisma';
 import { requireAuth, requireRole, AuthenticatedRequest } from '../lib/auth';
+import { requireFrontendUser, FrontendAuthenticatedRequest } from '../lib/frontendUserAuth';
 import { createAdminNotification } from '../lib/notify';
 
 const router = Router();
+
+const commentLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  limit: 20,
+  standardHeaders: 'draft-7',
+  legacyHeaders: false,
+  handler: (_req: Request, res: Response) => {
+    res.status(429).json({
+      error: { code: 'RATE_LIMIT_EXCEEDED', message: 'Too many comments. Please try again later.' },
+    });
+  },
+});
 
 // ─── Prohibited keyword filter ───────────────────────────────────────────────
 
@@ -22,14 +36,12 @@ function containsProhibitedContent(text: string): boolean {
 
 const submitCommentSchema = z.object({
   articleId: z.string().min(1, 'Article ID is required'),
-  displayName: z.string().min(1, 'Display name is required'),
-  email: z.string().email('Valid email is required'),
-  content: z.string().min(1, 'Comment content is required'),
+  content: z.string().min(1, 'Comment content is required').max(5000),
 });
 
-// ─── POST / — Submit comment (public) ────────────────────────────────────────
+// ─── POST / — Submit comment (requires public-site login) ────────────────────
 
-router.post('/', async (req: Request, res: Response) => {
+router.post('/', commentLimiter, requireFrontendUser, async (req: FrontendAuthenticatedRequest, res: Response) => {
   const parsed = submitCommentSchema.safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({
@@ -43,7 +55,8 @@ router.post('/', async (req: Request, res: Response) => {
   }
 
   try {
-    const { articleId, displayName, email, content } = parsed.data;
+    const { articleId, content } = parsed.data;
+    const user = req.frontendUser!;
 
     // Verify article exists
     const article = await prisma.article.findUnique({ where: { id: articleId } });
@@ -59,8 +72,8 @@ router.post('/', async (req: Request, res: Response) => {
 
     const comment = await prisma.comment.create({
       data: {
-        displayName,
-        email,
+        displayName: user.name,
+        email: user.email,
         content,
         status: isFlagged ? 'FLAGGED' : 'PENDING',
         articleId,
@@ -71,7 +84,7 @@ router.post('/', async (req: Request, res: Response) => {
     createAdminNotification({
       type: 'comment_pending',
       title: 'புதிய கருத்து',
-      message: `${displayName} posted a comment${isFlagged ? ' (FLAGGED)' : ''}`,
+      message: `${user.name} posted a comment${isFlagged ? ' (FLAGGED)' : ''}`,
       link: '/comments',
     });
 
@@ -140,6 +153,8 @@ router.get('/:articleId', async (req: Request, res: Response) => {
         orderBy: { createdAt: 'asc' },
         skip,
         take: pageSize,
+        // Never expose commenter email addresses on the public endpoint
+        select: { id: true, displayName: true, content: true, createdAt: true },
       }),
       prisma.comment.count({ where: { articleId, status: 'APPROVED' } }),
     ]);

@@ -76,7 +76,10 @@ function Fix-WindowsPaths($file, $projectSubPath) {
     $content = $content -replace ($escapedRoot + '/' + [regex]::Escape($projectSubPath.Replace('\','/'))), ''
     $content = $content -replace ($escapedDbl + '\\\\' + [regex]::Escape($projectSubPath.Replace('\','\\'))), ''
     $content = $content -replace ($escapedFwd + '/' + [regex]::Escape($projectSubPath.Replace('\','/'))), ''
-    Set-Content $file $content -Encoding UTF8 -NoNewline
+    # Write without BOM — Next.js JSON.parse()s these manifests and a UTF-8
+    # BOM (added by Set-Content -Encoding UTF8 on Windows PowerShell) causes
+    # "Unexpected token" 500s in production.
+    [System.IO.File]::WriteAllText($file, $content, [System.Text.UTF8Encoding]::new($false))
 }
 
 # --- Determine what to build -------------------------------------------------
@@ -309,24 +312,23 @@ if ($doCms) {
                'process.env.NODE_PATH=p.join(__dirname,''_modules'');' + "`r`n" +
                'M._initPaths();' + "`r`n" +
                'require(''./server.js'');'
-    Set-Content (Join-Path $CMS_DEST "start.js") $startJs -Encoding UTF8
+    [System.IO.File]::WriteAllText((Join-Path $CMS_DEST "start.js"), $startJs, [System.Text.UTF8Encoding]::new($false))
     Write-Ok "start.js created"
 
-    # Write .htaccess
+    # Write .htaccess — single Passenger block only. A second block with a
+    # different PassengerStartupFile (server.js instead of start.js) makes
+    # Passenger bypass the _modules resolver and the app crash-loops.
     $htaccess = "# DO NOT REMOVE. CLOUDLINUX PASSENGER CONFIGURATION BEGIN`r`n" +
                 "PassengerAppRoot `"/home/oorumur1/public_html/cms`"`r`n" +
                 "PassengerBaseURI `"/`"`r`n" +
                 "PassengerNodejs `"/home/oorumur1/nodevenv/public_html/cms/22/bin/node`"`r`n" +
                 "PassengerAppType node`r`n" +
-                "PassengerStartupFile server.js`r`n" +
+                "PassengerStartupFile start.js`r`n" +
+                "PassengerAppLogFile `"/home/oorumur1/logs/passenger.log`"`r`n" +
                 "# DO NOT REMOVE. CLOUDLINUX PASSENGER CONFIGURATION END`r`n" +
                 "Options -Indexes`r`n" +
-                "PassengerEnabled on`r`n" +
-                "PassengerAppRoot /home/oorumur1/public_html/cms`r`n" +
-                "PassengerNodejs /home/oorumur1/nodevenv/public_html/cms/22/bin/node`r`n" +
-                "PassengerAppType node`r`n" +
-                "PassengerStartupFile server.js`r`n"
-    Set-Content (Join-Path $CMS_DEST ".htaccess") $htaccess -Encoding UTF8
+                "PassengerEnabled on`r`n"
+    [System.IO.File]::WriteAllText((Join-Path $CMS_DEST ".htaccess"), $htaccess, [System.Text.UTF8Encoding]::new($false))
     Write-Ok ".htaccess created"
 
     # Copy .env.production
@@ -437,12 +439,8 @@ if ($doFrontend) {
                 "PassengerStartupFile server.js`r`n" +
                 "# DO NOT REMOVE. CLOUDLINUX PASSENGER CONFIGURATION END`r`n" +
                 "Options -Indexes`r`n" +
-                "PassengerEnabled on`r`n" +
-                "PassengerAppRoot /home/oorumur1/public_html/frontend`r`n" +
-                "PassengerNodejs /home/oorumur1/nodevenv/public_html/frontend/22/bin/node`r`n" +
-                "PassengerAppType node`r`n" +
-                "PassengerStartupFile server.js`r`n"
-    Set-Content (Join-Path $FE_DEST ".htaccess") $htaccess -Encoding UTF8
+                "PassengerEnabled on`r`n"
+    [System.IO.File]::WriteAllText((Join-Path $FE_DEST ".htaccess"), $htaccess, [System.Text.UTF8Encoding]::new($false))
     Write-Ok ".htaccess created"
 
     # Copy .env.production

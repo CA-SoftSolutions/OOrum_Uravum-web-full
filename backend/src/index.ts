@@ -32,6 +32,7 @@ dotenv.config();
 
 const app = express();
 const PORT = process.env.PORT || 4000;
+app.set('trust proxy', 1);
 
 // Security middleware
 app.use(helmet({
@@ -67,6 +68,18 @@ app.use(decodeWafPayload);
 
 // Rate limiting — public limiter on all /api/* routes
 app.use('/api', publicRateLimiter);
+
+// The host's front nginx caches GET responses by URL, which serves stale API
+// data after CMS mutations. API responses are dynamic — forbid shared caching.
+app.use('/api', (_req, res, next) => {
+  res.set({
+    'Cache-Control': 'no-store, no-cache, must-revalidate, proxy-revalidate',
+    'Pragma': 'no-cache',
+    'Expires': '0',
+    'X-Accel-Expires': '0',
+  });
+  next();
+});
 
 // Serve uploaded media files — allow cross-origin access for images
 const uploadPath = process.env.MEDIA_UPLOAD_PATH;

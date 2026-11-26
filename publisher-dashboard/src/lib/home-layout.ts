@@ -18,6 +18,7 @@ export const DEFAULT_HOME_LAYOUT_SECTIONS: HomeLayoutSection[] = [
   { id: 'featuredHub', label: 'Featured Hub', visible: true, order: 9 },
   { id: 'sponsoredSidebar', label: 'Featured Advertising', visible: true, order: 10 },
   { id: 'categoryCards', label: 'Category Cards', visible: true, order: 11 },
+  { id: 'popularArticles', label: 'Popular Articles (மீள் பார்வைக்காக)', visible: true, order: 12 },
 ];
 
 export const HOME_LAYOUT_GROUPS = [
@@ -25,7 +26,7 @@ export const HOME_LAYOUT_GROUPS = [
     id: 'fixed',
     label: 'Fixed homepage sections',
     description: 'Toggle these sections; their positions are part of the homepage design.',
-    sectionIds: ['ticker', 'welcome', 'featuredHub', 'sponsoredSidebar', 'categoryCards'],
+    sectionIds: ['ticker', 'welcome', 'featuredHub', 'sponsoredSidebar', 'categoryCards', 'popularArticles'],
     reorderable: false,
   },
   {

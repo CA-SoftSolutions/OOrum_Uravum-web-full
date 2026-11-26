@@ -36,6 +36,31 @@ export default function HomeLayoutPage() {
   const [videoCat2, setVideoCat2] = useState('');
   const [videoInfoRowTitle, setVideoInfoRowTitle] = useState('அனைத்து வீடியோக்கள்');
 
+  // Live preview state
+  const [previewUrl, setPreviewUrl] = useState('');
+  const [previewNonce, setPreviewNonce] = useState(0);
+  const [previewError, setPreviewError] = useState('');
+
+  useEffect(() => {
+    let active = true;
+    fetch('/api/preview-config', { cache: 'no-store' })
+      .then(async (response) => {
+        if (!response.ok) throw new Error('Failed to load preview configuration.');
+        return response.json() as Promise<{ frontendUrl?: unknown }>;
+      })
+      .then(({ frontendUrl }) => {
+        if (active && typeof frontendUrl === 'string') setPreviewUrl(frontendUrl);
+      })
+      .catch(() => {
+        if (active) setPreviewError('Frontend preview could not be loaded.');
+      });
+    return () => { active = false; };
+  }, []);
+
+  const refreshPreview = useCallback(() => {
+    setPreviewNonce((n) => n + 1);
+  }, []);
+
   const fetchConfig = useCallback(async () => {
     if (!token) return;
     setLoading(true);
@@ -161,6 +186,7 @@ export default function HomeLayoutPage() {
         body: JSON.stringify({ key: 'homeLayout', value: JSON.stringify(config) }),
       });
       setMessage('Layout saved successfully.');
+      refreshPreview();
       return true;
     } catch {
       setError('Failed to save layout.');
@@ -186,6 +212,7 @@ export default function HomeLayoutPage() {
         body: JSON.stringify({ key: 'heroConfig', value: JSON.stringify(config) }),
       });
       setMessage('Hero config saved successfully.');
+      refreshPreview();
     } catch {
       setError('Failed to save hero config.');
     } finally {
@@ -209,6 +236,7 @@ export default function HomeLayoutPage() {
         body: JSON.stringify({ key: 'videoHeroConfig', value: JSON.stringify(config) }),
       });
       setMessage('Video hero config saved successfully.');
+      refreshPreview();
     } catch {
       setError('Failed to save video hero config.');
     } finally {
@@ -266,7 +294,9 @@ export default function HomeLayoutPage() {
         </button>
       </div>
 
-      <div className="space-y-6 max-w-2xl">
+      <div className="grid items-start gap-8 xl:grid-cols-[minmax(0,1fr)_minmax(340px,0.85fr)]">
+      <div className="min-w-0">
+      <div className="space-y-6 max-w-3xl">
         {HOME_LAYOUT_GROUPS.map((group) => {
           const groupSections = sections
             .filter((section) => group.sectionIds.some((id) => id === section.id))
@@ -382,6 +412,37 @@ export default function HomeLayoutPage() {
         <button type="button" onClick={saveVideoHeroConfig} disabled={saving} className="bg-blue-600 text-white px-4 py-2 rounded text-sm hover:bg-blue-700 disabled:opacity-50">
           {saving ? 'Saving…' : 'Save Video Hero Config'}
         </button>
+      </div>
+      </div>
+      <aside className="xl:sticky xl:top-6">
+        <div className="mb-3 flex items-center justify-between gap-3">
+          <div>
+            <h2 className="text-lg font-semibold">Live Preview</h2>
+            <p className="text-xs text-gray-500">Homepage refreshes automatically after each save.</p>
+          </div>
+          <button
+            type="button"
+            onClick={refreshPreview}
+            className="shrink-0 rounded border px-2 py-1 text-xs hover:bg-gray-50"
+          >
+            Refresh
+          </button>
+        </div>
+        {previewError ? (
+          <p role="alert" className="rounded border border-red-200 bg-red-50 p-3 text-sm text-red-700">{previewError}</p>
+        ) : previewUrl ? (
+          <iframe
+            key={previewNonce}
+            src={`${previewUrl}${previewUrl.includes('?') ? '&' : '?'}_r=${previewNonce}`}
+            title="Live homepage preview"
+            className="h-[720px] w-full rounded-lg border border-gray-300 bg-white shadow"
+          />
+        ) : (
+          <div role="status" className="flex h-[720px] items-center justify-center rounded-lg border border-gray-200 bg-white text-sm text-gray-500">
+            Loading preview…
+          </div>
+        )}
+      </aside>
       </div>
     </div>
   );

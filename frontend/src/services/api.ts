@@ -90,6 +90,29 @@ export class ApiRequestError extends Error {
   }
 }
 
+// Rows seeded from a local dev database can store absolute media URLs such as
+// `http://localhost:4000/uploads/…`. Browsers cannot reach those, so rewrite any
+// localhost/loopback backend URL found in API payloads to the public backend
+// origin before it reaches a component.
+const LOCAL_BACKEND_URL_RE = /(?:https?:)?\/\/(?:localhost|127\.0\.0\.1|\[::1\])(?::\d+)?/gi;
+
+function rewriteLocalBackendUrls(value: unknown): unknown {
+  if (typeof value === 'string') {
+    return value.replace(LOCAL_BACKEND_URL_RE, PUBLIC_ORIGIN);
+  }
+  if (Array.isArray(value)) {
+    return value.map(rewriteLocalBackendUrls);
+  }
+  if (value !== null && typeof value === 'object') {
+    const out: Record<string, unknown> = {};
+    for (const [key, entry] of Object.entries(value)) {
+      out[key] = rewriteLocalBackendUrls(entry);
+    }
+    return out;
+  }
+  return value;
+}
+
 async function fetchApi<T>(
   path: string,
   options?: RequestInit,
@@ -116,7 +139,7 @@ async function fetchApi<T>(
     throw new ApiRequestError(res.status, body);
   }
 
-  return res.json() as Promise<T>;
+  return rewriteLocalBackendUrls(await res.json()) as T;
 }
 
 // ─── Query param builder ─────────────────────────────────────────────────────
@@ -346,8 +369,10 @@ export async function getSiteSettings(): Promise<SiteSettings> {
  * internal hostname such as `http://backend:4000` would be embedded verbatim and
  * the browser could not resolve it.
  */
-const PUBLIC_ORIGIN = (process.env.NEXT_PUBLIC_API_URL || 'http://localhost:4000/api')
-  .replace(/\/api\/?$/, '');
+const PUBLIC_ORIGIN = (process.env.NEXT_PUBLIC_MEDIA_ORIGIN
+  || (process.env.NEXT_PUBLIC_API_URL || 'http://localhost:4000/api')
+    .replace(/\/api\/?$/, ''))
+  .replace(/\/+$/, '');
 
 /**
  * Turns a stored logo path into a URL the browser can actually load.

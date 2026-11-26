@@ -3,6 +3,7 @@
 import { useState, useRef, useEffect } from 'react';
 import Link from 'next/link';
 import { useUserAuth } from '@/contexts/UserAuthContext';
+import AuthModal from '@/components/ui/AuthModal';
 import Breadcrumb from '@/components/ui/Breadcrumb';
 
 interface FormData {
@@ -66,7 +67,8 @@ const initialFormData: FormData = {
 };
 
 export default function SubmitObituaryPage() {
-  const { token, loading: authLoading } = useUserAuth();
+  const { user, token, loading: authLoading, logout } = useUserAuth();
+  const [authModalOpen, setAuthModalOpen] = useState(false);
   const now = new Date();
   const latestDateOfDeath = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
   const yesterday = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1);
@@ -215,6 +217,12 @@ export default function SubmitObituaryPage() {
         body: fd,
       });
 
+      if (res.status === 401) {
+        logout();
+        setAuthModalOpen(true);
+        throw new Error('உள்நுழைவு காலாவதியானது. மீண்டும் உள்நுழையவும்.');
+      }
+
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
         if (data.error?.details) {
@@ -257,6 +265,32 @@ export default function SubmitObituaryPage() {
     );
   }
 
+  if (!authLoading && !token) {
+    return (
+      <main className="mx-auto max-w-4xl px-4 py-12">
+        <Breadcrumb items={[
+          { label: 'முகப்பு', href: '/' },
+          { label: 'Obituary (அஞ்சலி)', href: '/obituary' },
+          { label: 'Obituary Information Form' },
+        ]} />
+        <div className="mt-6 bg-card-bg rounded-2xl shadow-sm p-8 border border-yellow-200/50 text-center">
+          <h1 className="text-2xl font-bold text-accent-red mb-3">Obituary Information Form</h1>
+          <p className="text-sm text-foreground/70 mb-6">
+            இரங்கல் படிவத்தை சமர்ப்பிக்க உள்நுழையவும் அல்லது பதிவு செய்யவும்.
+          </p>
+          <button
+            type="button"
+            onClick={() => setAuthModalOpen(true)}
+            className="inline-block bg-accent-red text-white px-6 py-2.5 rounded-lg text-sm font-bold hover:bg-accent-red/90"
+          >
+            உள்நுழைய / பதிவு செய்க
+          </button>
+        </div>
+        <AuthModal isOpen={authModalOpen} onClose={() => setAuthModalOpen(false)} />
+      </main>
+    );
+  }
+
   return (
     <main className="mx-auto max-w-4xl px-4 py-8">
       <Breadcrumb items={[
@@ -279,9 +313,9 @@ export default function SubmitObituaryPage() {
         {error && (
           <div className="bg-red-50 border border-red-200 text-red-700 rounded-lg p-3 mb-6 text-sm">{error}</div>
         )}
-        {!authLoading && (
+        {user && (
           <p className="mb-4 text-sm text-foreground/60" role="status">
-            {token ? 'Submitting as your signed-in account.' : 'Submitting anonymously. Sign in to include your account details.'}
+            {user.name} ({user.email}) கணக்கில் சமர்ப்பிக்கப்படுகிறது.
           </p>
         )}
 
@@ -730,6 +764,7 @@ export default function SubmitObituaryPage() {
           </div>
         </form>
       </div>
+      <AuthModal isOpen={authModalOpen} onClose={() => setAuthModalOpen(false)} />
     </main>
   );
 }

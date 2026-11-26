@@ -54,6 +54,26 @@ vi.mock('../lib/auth', () => ({
   AuthenticatedRequest: {},
 }));
 
+vi.mock('../lib/frontendUserAuth', () => ({
+  requireFrontendUser: (req: any, res: any, next: any) => {
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({
+        error: { code: 'UNAUTHORIZED', message: 'Login is required to perform this action' },
+      });
+    }
+    req.frontendUser = {
+      id: 'fu-1',
+      name: 'Site Visitor',
+      email: 'visitor@example.com',
+      phone: null,
+      address: null,
+      avatarUrl: null,
+    };
+    next();
+  },
+}));
+
 // ─── Test App Setup ──────────────────────────────────────────────────────────
 
 import commentsRouter from './comments';
@@ -87,27 +107,30 @@ beforeEach(() => {
   vi.clearAllMocks();
 });
 
-// ─── POST / — Submit comment (public) ────────────────────────────────────────
+// ─── POST / — Submit comment (requires login) ────────────────────────────────
 
 describe('POST /api/comments', () => {
   const validBody = {
     articleId: 'art-1',
-    displayName: 'Visitor',
-    email: 'visitor@example.com',
     content: 'Great article!',
   };
+  const auth = (r: request.Test) => r.set('Authorization', 'Bearer user-token');
 
-  it('creates comment with PENDING status', async () => {
+  it('creates comment with PENDING status using the signed-in identity', async () => {
     mockArticleFindUnique.mockResolvedValue({ id: 'art-1' });
     mockCommentCreate.mockResolvedValue(sampleComment);
 
     const app = createApp();
-    const res = await request(app).post('/api/comments').send(validBody);
+    const res = await auth(request(app).post('/api/comments')).send(validBody);
 
     expect(res.status).toBe(201);
     expect(mockCommentCreate).toHaveBeenCalledWith(
       expect.objectContaining({
-        data: expect.objectContaining({ status: 'PENDING' }),
+        data: expect.objectContaining({
+          status: 'PENDING',
+          displayName: 'Site Visitor',
+          email: 'visitor@example.com',
+        }),
       }),
     );
   });
@@ -117,8 +140,7 @@ describe('POST /api/comments', () => {
     mockCommentCreate.mockResolvedValue({ ...sampleComment, status: 'FLAGGED' });
 
     const app = createApp();
-    const res = await request(app)
-      .post('/api/comments')
+    const res = await auth(request(app).post('/api/comments'))
       .send({ ...validBody, content: 'This is spam content' });
 
     expect(res.status).toBe(201);
@@ -133,7 +155,7 @@ describe('POST /api/comments', () => {
     mockArticleFindUnique.mockResolvedValue(null);
 
     const app = createApp();
-    const res = await request(app).post('/api/comments').send(validBody);
+    const res = await auth(request(app).post('/api/comments')).send(validBody);
 
     expect(res.status).toBe(404);
     expect(res.body.error.code).toBe('NOT_FOUND');
@@ -141,10 +163,19 @@ describe('POST /api/comments', () => {
 
   it('returns 400 for invalid body', async () => {
     const app = createApp();
-    const res = await request(app).post('/api/comments').send({ articleId: '' });
+    const res = await auth(request(app).post('/api/comments')).send({ articleId: '' });
 
     expect(res.status).toBe(400);
     expect(res.body.error.code).toBe('VALIDATION_ERROR');
+  });
+
+  it('returns 401 without a user token', async () => {
+    const app = createApp();
+    const res = await request(app).post('/api/comments').send(validBody);
+
+    expect(res.status).toBe(401);
+    expect(res.body.error.code).toBe('UNAUTHORIZED');
+    expect(mockCommentCreate).not.toHaveBeenCalled();
   });
 });
 

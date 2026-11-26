@@ -7,7 +7,7 @@ import ThemeProvider from "@/components/ui/ThemeProvider";
 import ScrollToTop from "@/components/ui/ScrollToTop";
 import { UserAuthProvider } from "@/contexts/UserAuthContext";
 import { SiteSettingsPreviewProvider } from "@/contexts/SiteSettingsPreviewContext";
-import { getCategories, getSiteSettings, parseThemeColors } from "@/services/api";
+import { getCategories, getSiteSettings, getHomeLayout, parseThemeColors } from "@/services/api";
 import type { Category, SiteSettings } from "@/services/api";
 import GoogleAnalytics from "@/components/ui/GoogleAnalytics";
 import "./globals.css";
@@ -82,7 +82,7 @@ export default async function RootLayout({
 }: Readonly<{
   children: React.ReactNode;
 }>) {
-  const [initialCategories, settings] = await Promise.all([
+  const [initialCategories, settings, homeLayout] = await Promise.all([
     getCategories().catch((error: unknown) => {
       console.error('[layout] Failed to load header categories:', error);
       return [] as Category[];
@@ -91,8 +91,14 @@ export default async function RootLayout({
       console.error('[layout] Failed to load site settings:', error);
       return { analyticsId: '' };
     }),
+    getHomeLayout().catch((error: unknown) => {
+      console.error('[layout] Failed to load home layout:', error);
+      return [];
+    }),
   ]);
   const initialThemeColors = parseThemeColors(settings.themeColors);
+  const popularArticlesSection = homeLayout.find((s) => s.id === 'popularArticles');
+  const showPopularArticles = popularArticlesSection ? popularArticlesSection.visible : true;
 
   return (
     <html
@@ -106,7 +112,7 @@ export default async function RootLayout({
             <ThemeProvider initialColors={initialThemeColors}>
               <Header initialCategories={initialCategories} />
               <main className="flex-1">{children}</main>
-              <PopularArticles />
+              {showPopularArticles && <PopularArticles />}
               <Footer />
               <GoogleAnalytics initialMeasurementId={settings.analyticsId} />
               <ScrollToTop />
