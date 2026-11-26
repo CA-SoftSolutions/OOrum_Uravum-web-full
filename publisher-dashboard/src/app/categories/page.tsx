@@ -3,7 +3,8 @@
 import { useEffect, useState, useCallback } from 'react';
 import { useAuth } from '@/contexts/AuthContext';
 import { adminFetch, AdminApiError } from '@/lib/api';
-
+import { ToastContainer, useToast } from '@/components/Toast';
+import CategoryIconField, { CategoryIconSvg, resolveCategoryIconUrl, type CategoryIconKey } from '@/components/CategoryIconField';
 // ─── Types ───────────────────────────────────────────────────────────────────
 
 interface ParentCategory {
@@ -16,7 +17,10 @@ interface Category {
   id: string;
   name: string;
   slug: string;
+  path: string | null;
   description: string | null;
+  iconUrl: string | null;
+  iconKey: string | null;
   parentId: string | null;
   parent: ParentCategory | null;
   _count: { articles: number };
@@ -26,6 +30,7 @@ interface Category {
 
 export default function CategoriesPage() {
   const { token, hasRole } = useAuth();
+  const { toasts, showToast, dismiss } = useToast();
   const [categories, setCategories] = useState<Category[]>([]);
   const [loading, setLoading] = useState(true);
   const [listError, setListError] = useState('');
@@ -34,6 +39,9 @@ export default function CategoriesPage() {
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
   const [parentId, setParentId] = useState('');
+  const [iconUrl, setIconUrl] = useState('');
+  const [iconKey, setIconKey] = useState('');
+  const [iconUploading, setIconUploading] = useState(false);
   const [formError, setFormError] = useState('');
   const [deleteError, setDeleteError] = useState('');
   const [submitting, setSubmitting] = useState(false);
@@ -66,6 +74,8 @@ export default function CategoriesPage() {
     setName('');
     setDescription('');
     setParentId('');
+    setIconUrl('');
+    setIconKey('');
     setEditingId(null);
     setFormError('');
     setShowForm(false);
@@ -76,6 +86,8 @@ export default function CategoriesPage() {
     setName(cat.name);
     setDescription(cat.description || '');
     setParentId(cat.parentId || '');
+    setIconUrl(cat.iconUrl || '');
+    setIconKey(cat.iconKey || '');
     setFormError('');
     setShowForm(true);
   };
@@ -91,6 +103,9 @@ export default function CategoriesPage() {
       name,
       description: description || undefined,
       parentId: parentId || undefined,
+      // Send null (not undefined) to clear an icon on edit.
+      iconUrl: iconUrl || null,
+      iconKey: iconKey || null,
     };
 
     try {
@@ -109,6 +124,7 @@ export default function CategoriesPage() {
       }
       resetForm();
       fetchCategories();
+      showToast(editingId ? 'Category updated' : 'Category created');
     } catch (err) {
       if (err instanceof AdminApiError) {
         setFormError(err.message);
@@ -131,6 +147,7 @@ export default function CategoriesPage() {
         method: 'DELETE',
       });
       fetchCategories();
+      showToast('Category deleted');
     } catch (err) {
       if (err instanceof AdminApiError && err.code === 'HAS_ARTICLES') {
         setDeleteError(err.message);
@@ -146,6 +163,7 @@ export default function CategoriesPage() {
 
   return (
     <div>
+      <ToastContainer toasts={toasts} onDismiss={dismiss} />
       {/* Header */}
       <div className="flex justify-between items-center mb-6">
         <h1 className="text-2xl font-bold">Categories</h1>
@@ -200,10 +218,17 @@ export default function CategoriesPage() {
                 <option key={c.id} value={c.id}>{c.name}</option>
               ))}
           </select>
+          <CategoryIconField
+            iconUrl={iconUrl}
+            iconKey={iconKey}
+            onIconUrlChange={setIconUrl}
+            onIconKeyChange={setIconKey}
+            onUploadingChange={setIconUploading}
+          />
           <div className="flex gap-2">
             <button
               type="submit"
-              disabled={submitting}
+              disabled={submitting || iconUploading}
               className="bg-blue-600 text-white px-4 py-2 rounded text-sm hover:bg-blue-700 disabled:opacity-50"
             >
               {submitting ? 'Saving…' : 'Save'}
@@ -233,6 +258,7 @@ export default function CategoriesPage() {
           <table className="w-full text-sm">
             <thead className="bg-gray-100">
               <tr>
+                <th className="text-left px-4 py-2 w-14">Icon</th>
                 <th className="text-left px-4 py-2">Name</th>
                 <th className="text-left px-4 py-2">Slug</th>
                 <th className="text-left px-4 py-2">Description</th>
@@ -244,6 +270,18 @@ export default function CategoriesPage() {
             <tbody className="divide-y">
               {categories.map((c) => (
                 <tr key={c.id}>
+                  <td className="px-4 py-2">
+                    <span className="flex h-8 w-8 items-center justify-center rounded border bg-gray-50 overflow-hidden">
+                      {resolveCategoryIconUrl(c.iconUrl) ? (
+                        // eslint-disable-next-line @next/next/no-img-element
+                        <img src={resolveCategoryIconUrl(c.iconUrl) as string} alt="" className="h-5 w-5 object-contain" />
+                      ) : c.iconKey ? (
+                        <CategoryIconSvg iconKey={c.iconKey as CategoryIconKey} className="h-4 w-4 text-gray-600" />
+                      ) : (
+                        <span className="text-[10px] text-gray-300">—</span>
+                      )}
+                    </span>
+                  </td>
                   <td className="px-4 py-2">{c.name}</td>
                   <td className="px-4 py-2 text-gray-500">{c.slug}</td>
                   <td className="px-4 py-2 text-gray-500 truncate max-w-xs">{c.description || '—'}</td>

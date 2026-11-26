@@ -2,6 +2,7 @@ import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
 import path from 'path';
+import fs from 'fs';
 import dotenv from 'dotenv';
 import authRouter from './routes/auth';
 import articlesRouter from './routes/articles';
@@ -24,12 +25,14 @@ import frontendAuthRouter from './routes/frontendAuth';
 import notificationsRouter from './routes/notifications';
 import dashboardRouter from './routes/dashboard';
 import { publicRateLimiter } from './middleware/rateLimiter';
+import { decodeWafPayload } from './middleware/decodeWafPayload';
 import { setupSwagger } from './swagger';
 
 dotenv.config();
 
 const app = express();
 const PORT = process.env.PORT || 4000;
+app.set('trust proxy', 1);
 
 // Security middleware
 app.use(helmet({
@@ -59,15 +62,40 @@ app.use(cors({
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));
 
+// The publisher dashboard base64-wraps HTML fields to get past the WAF; unwrap
+// them here so HTML is stored as real markup instead of a base64 string.
+app.use(decodeWafPayload);
+
 // Rate limiting — public limiter on all /api/* routes
 app.use('/api', publicRateLimiter);
 
+// The host's front nginx caches GET responses by URL, which serves stale API
+// data after CMS mutations. API responses are dynamic — forbid shared caching.
+app.use('/api', (_req, res, next) => {
+  res.set({
+    'Cache-Control': 'no-store, no-cache, must-revalidate, proxy-revalidate',
+    'Pragma': 'no-cache',
+    'Expires': '0',
+    'X-Accel-Expires': '0',
+  });
+  next();
+});
+
 // Serve uploaded media files — allow cross-origin access for images
-const uploadPath = process.env.MEDIA_UPLOAD_PATH || './uploads';
+const uploadPath = process.env.MEDIA_UPLOAD_PATH;
+if (!uploadPath) {
+  console.error('FATAL: MEDIA_UPLOAD_PATH environment variable is not set');
+  process.exit(1);
+}
+const resolvedUploadPath = path.resolve(uploadPath);
+// Ensure upload directory exists
+if (!fs.existsSync(resolvedUploadPath)) {
+  fs.mkdirSync(resolvedUploadPath, { recursive: true });
+}
 app.use('/uploads', (_req, res, next) => {
   res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
   next();
-}, express.static(path.resolve(uploadPath)));
+}, express.static(resolvedUploadPath));
 
 // Routes
 app.use('/api/auth', authRouter);

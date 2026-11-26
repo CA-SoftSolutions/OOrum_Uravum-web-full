@@ -77,21 +77,26 @@ router.get('/', async (req: AuthenticatedRequest, res: Response) => {
 
     const { category, tag, author, status, dateFrom, dateTo } = req.query;
 
+    // Skip cache for authenticated admin requests (ensures CMS always sees fresh data)
+    const isAdminRequest = !!req.headers.authorization;
+
     // Build cache key
     const cacheKey = buildCacheKey('articles:list', {
       page, pageSize, category, tag, author, status, dateFrom, dateTo,
     });
 
-    const cached = await getCached<{
-      data: unknown[];
-      total: number;
-      page: number;
-      pageSize: number;
-      totalPages: number;
-    }>(cacheKey);
-    if (cached) {
-      res.json(cached);
-      return;
+    if (!isAdminRequest) {
+      const cached = await getCached<{
+        data: unknown[];
+        total: number;
+        page: number;
+        pageSize: number;
+        totalPages: number;
+      }>(cacheKey);
+      if (cached) {
+        res.json(cached);
+        return;
+      }
     }
 
     // Build where clause
@@ -105,7 +110,14 @@ router.get('/', async (req: AuthenticatedRequest, res: Response) => {
     }
 
     if (category && typeof category === 'string') {
-      where.category = { slug: category };
+      // Support comma-separated category slugs for hierarchical navigation
+      const categorySlugs = category.split(',').map(s => s.trim()).filter(Boolean);
+      if (categorySlugs.length === 1) {
+        where.category = { slug: categorySlugs[0] };
+      } else {
+        // Filter by multiple category slugs (parent + subcategories)
+        where.category = { slug: { in: categorySlugs } };
+      }
     }
 
     if (author && typeof author === 'string') {
@@ -166,10 +178,14 @@ router.get('/:slug', async (req: AuthenticatedRequest, res: Response) => {
     const slug = req.params.slug as string;
     const cacheKey = `articles:detail:${slug}`;
 
-    const cached = await getCached<unknown>(cacheKey);
-    if (cached) {
-      res.json(cached);
-      return;
+    const isAdminRequest = !!req.headers.authorization;
+
+    if (!isAdminRequest) {
+      const cached = await getCached<unknown>(cacheKey);
+      if (cached) {
+        res.json(cached);
+        return;
+      }
     }
 
     const article = await prisma.article.findUnique({
@@ -256,7 +272,7 @@ router.post(
       const serialized = serializeArticle(article);
 
       // Invalidate article list cache
-      await invalidateByTags(['articles']);
+      await invalidateByTags(['articles', 'search']);
       revalidateFrontend();
 
       res.status(201).json(serialized);
@@ -370,7 +386,7 @@ router.put(
       const serialized = serializeArticle(article);
 
       // Invalidate caches
-      const cacheTags = ['articles', `article:${id}`];
+      const cacheTags = ['articles', 'search', `article:${id}`];
       if (isPublishing) {
         cacheTags.push('home', `category:${article.categoryId}`);
       }
@@ -412,6 +428,7 @@ router.delete(
       // Invalidate caches
       await invalidateByTags([
         'articles',
+        'search',
         `article:${id}`,
         'home',
         `category:${existing.categoryId}`,

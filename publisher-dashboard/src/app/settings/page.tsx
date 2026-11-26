@@ -1,8 +1,9 @@
 'use client';
 
-import { useEffect, useState, useCallback, useRef } from 'react';
+import { useEffect, useState, useCallback, useRef, useMemo } from 'react';
 import { useAuth } from '@/contexts/AuthContext';
 import { adminFetch, AdminApiError } from '@/lib/api';
+import ImageUploadField from '@/components/ImageUploadField';
 
 const UPLOADS_BASE = (process.env.NEXT_PUBLIC_API_URL || 'http://localhost:4000/api').replace(/\/api$/, '');
 
@@ -15,12 +16,19 @@ interface ThemeColors {
 }
 
 const DEFAULT_COLORS: ThemeColors = {
-  primaryDark: '#1a1a2e',
-  accentRed: '#e94560',
-  background: '#f5f5f5',
+  primaryDark: '#285430',
+  accentRed: '#259306',
+  background: '#F5EFE3',
   foreground: '#171717',
   cardBg: '#ffffff',
 };
+
+const DEFAULT_SITE_TITLE = 'OORUM URAVUM';
+const DEFAULT_SITE_TAGLINE = 'ஒன்று பட்டால் உண்டு வாழ்வு';
+const DEFAULT_SITE_DESCRIPTION = 'தமிழ் செய்திகள் — செய்திகள், அறிந்து கொள்வோம், உடல் நலம், தொழில்நுட்பம், படைப்பாக்கம்';
+const ANALYTICS_ID_PATTERN = /^G-[A-Z0-9]{6,20}$/i;
+const PREVIEW_UPDATE_MESSAGE = 'oorum:site-settings-preview:update';
+const PREVIEW_READY_MESSAGE = 'oorum:site-settings-preview:ready';
 
 export default function SettingsPage() {
   const { token, hasRole } = useAuth();
@@ -54,6 +62,101 @@ export default function SettingsPage() {
 
   // Analytics
   const [analyticsId, setAnalyticsId] = useState('');
+  const [previewUrl, setPreviewUrl] = useState('');
+  const [previewOrigin, setPreviewOrigin] = useState('');
+  const [previewChannel, setPreviewChannel] = useState('');
+  const [previewReady, setPreviewReady] = useState(false);
+  const [previewError, setPreviewError] = useState('');
+  const previewFrame = useRef<HTMLIFrameElement>(null);
+
+  const previewSettings = useMemo(() => ({
+    siteTitle: siteTitle || DEFAULT_SITE_TITLE,
+    siteTagline: siteTagline || DEFAULT_SITE_TAGLINE,
+    siteDescription: siteDescription || DEFAULT_SITE_DESCRIPTION,
+    headerLogo,
+    footerLogo,
+    socialLinks: {
+      facebook: socialFacebook,
+      twitter: socialTwitter,
+      instagram: socialInstagram,
+      youtube: socialYoutube,
+      telegram: socialTelegram,
+    },
+    themeColors: colors,
+    analyticsId,
+  }), [
+    siteTitle,
+    siteTagline,
+    siteDescription,
+    headerLogo,
+    footerLogo,
+    socialFacebook,
+    socialTwitter,
+    socialInstagram,
+    socialYoutube,
+    socialTelegram,
+    colors,
+    analyticsId,
+  ]);
+
+  useEffect(() => {
+    let active = true;
+    const channel = window.crypto.randomUUID();
+    setPreviewChannel(channel);
+
+    fetch('/api/preview-config', { cache: 'no-store' })
+      .then(async (response) => {
+        if (!response.ok) throw new Error('Failed to load preview configuration.');
+        return response.json() as Promise<{ frontendUrl?: unknown }>;
+      })
+      .then(({ frontendUrl }) => {
+        if (!active || typeof frontendUrl !== 'string') return;
+        const frontend = new URL(frontendUrl);
+        if (!['http:', 'https:'].includes(frontend.protocol)) {
+          throw new Error('Invalid frontend preview URL.');
+        }
+        frontend.searchParams.set('__sitePreviewChannel', channel);
+        frontend.searchParams.set('__sitePreviewParentOrigin', window.location.origin);
+        setPreviewOrigin(new URL(frontendUrl).origin);
+        setPreviewUrl(frontend.toString());
+      })
+      .catch((previewLoadError: unknown) => {
+        console.error('[settings] Failed to initialize frontend preview:', previewLoadError);
+        if (active) setPreviewError('Frontend preview could not be loaded. Check FRONTEND_PREVIEW_URL.');
+      });
+
+    return () => { active = false; };
+  }, []);
+
+  useEffect(() => {
+    if (!previewOrigin || !previewChannel) return;
+
+    const handlePreviewMessage = (event: MessageEvent<unknown>) => {
+      if (event.origin !== previewOrigin || event.source !== previewFrame.current?.contentWindow) return;
+      if (typeof event.data !== 'object' || event.data === null) return;
+      const message = event.data as { type?: unknown; channel?: unknown };
+      if (message.type === PREVIEW_READY_MESSAGE && message.channel === previewChannel) {
+        setPreviewReady(true);
+        previewFrame.current?.contentWindow?.postMessage({
+          type: PREVIEW_UPDATE_MESSAGE,
+          channel: previewChannel,
+          settings: previewSettings,
+        }, previewOrigin);
+      }
+    };
+
+    window.addEventListener('message', handlePreviewMessage);
+    return () => window.removeEventListener('message', handlePreviewMessage);
+  }, [previewChannel, previewOrigin, previewSettings]);
+
+  useEffect(() => {
+    if (!previewReady || !previewChannel || !previewOrigin) return;
+    previewFrame.current?.contentWindow?.postMessage({
+      type: PREVIEW_UPDATE_MESSAGE,
+      channel: previewChannel,
+      settings: previewSettings,
+    }, previewOrigin);
+  }, [previewChannel, previewOrigin, previewReady, previewSettings]);
 
   const fetchSettings = useCallback(async () => {
     if (!token) return;
@@ -95,24 +198,47 @@ export default function SettingsPage() {
     return <div><h1 className="text-2xl font-bold mb-4">Settings</h1><p className="text-red-600">Admin access required.</p></div>;
   }
 
-  const saveSetting = async (key: string, value: string) => {
-    await adminFetch('/settings', { token: token!, method: 'PUT', body: JSON.stringify({ key, value }) });
-  };
-
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
-    setError(''); setMessage(''); setSaving(true);
+    setError('');
+    setMessage('');
+    if (Object.values(colors).some((color) => !/^#[\da-f]{6}$/i.test(color))) {
+      setError('Theme colors must be valid six-digit hex values.');
+      return;
+    }
+    if (analyticsId && !ANALYTICS_ID_PATTERN.test(analyticsId)) {
+      setError('Google Analytics ID must use the G-XXXXXXXXXX format.');
+      return;
+    }
+    if (!token) {
+      setError('Your session expired. Sign in again to save settings.');
+      return;
+    }
+
+    setSaving(true);
     try {
-      await Promise.all([
-        saveSetting('siteTitle', siteTitle),
-        saveSetting('siteTagline', siteTagline),
-        saveSetting('siteDescription', siteDescription),
-        saveSetting('analyticsId', analyticsId),
-        saveSetting('headerLogo', headerLogo),
-        saveSetting('footerLogo', footerLogo),
-        saveSetting('socialLinks', JSON.stringify({ facebook: socialFacebook, twitter: socialTwitter, instagram: socialInstagram, youtube: socialYoutube, telegram: socialTelegram })),
-        saveSetting('themeColors', JSON.stringify(colors)),
-      ]);
+      await adminFetch('/settings', {
+        token,
+        method: 'PUT',
+        body: JSON.stringify({
+          settings: {
+            siteTitle,
+            siteTagline,
+            siteDescription,
+            analyticsId,
+            headerLogo,
+            footerLogo,
+            socialLinks: JSON.stringify({
+              facebook: socialFacebook,
+              twitter: socialTwitter,
+              instagram: socialInstagram,
+              youtube: socialYoutube,
+              telegram: socialTelegram,
+            }),
+            themeColors: JSON.stringify(colors),
+          },
+        }),
+      });
       setMessage('Settings saved successfully.');
     } catch (err) {
       setError(err instanceof AdminApiError ? err.message : 'Failed to save.');
@@ -141,7 +267,8 @@ export default function SettingsPage() {
   return (
     <div>
       <h1 className="text-2xl font-bold mb-6">Site Settings</h1>
-      <form onSubmit={handleSave} className="space-y-8 max-w-2xl">
+      <div className="grid items-start gap-8 xl:grid-cols-[minmax(0,1.15fr)_minmax(360px,0.85fr)]">
+      <form onSubmit={handleSave} className="space-y-8">
         {error && <p className="text-red-600 text-sm bg-red-50 px-3 py-2 rounded">{error}</p>}
         {message && <p className="text-green-600 text-sm bg-green-50 px-3 py-2 rounded">{message}</p>}
 
@@ -165,51 +292,21 @@ export default function SettingsPage() {
         {/* Logos */}
         <section className="bg-white p-5 rounded-lg shadow space-y-4">
           <h2 className="text-lg font-semibold border-b pb-2">Logos</h2>
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            {/* Header Logo */}
-            <div>
-              <label className="block text-sm font-medium mb-2">Header Logo</label>
-              {headerLogo ? (
-                <div className="flex items-start gap-3">
-                  <div className="w-32 h-16 rounded border bg-gray-900 flex items-center justify-center overflow-hidden p-1">
-                    {/* eslint-disable-next-line @next/next/no-img-element */}
-                    <img src={headerLogo} alt="Header logo" className="max-w-full max-h-full object-contain" />
-                  </div>
-                  <div className="flex flex-col gap-1">
-                    <button type="button" onClick={() => headerLogoRef.current?.click()} className="text-xs text-blue-600 hover:underline">Change</button>
-                    <button type="button" onClick={() => setHeaderLogo('')} className="text-xs text-red-600 hover:underline">Remove</button>
-                  </div>
-                </div>
-              ) : (
-                <div onClick={() => headerLogoRef.current?.click()} className="flex items-center gap-3 border-2 border-dashed border-gray-300 rounded-lg px-4 py-3 cursor-pointer hover:border-blue-400 hover:bg-blue-50/50 transition-colors" role="button" tabIndex={0} onKeyDown={(e) => { if (e.key === 'Enter') headerLogoRef.current?.click(); }}>
-                  <svg className="w-6 h-6 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}><path strokeLinecap="round" strokeLinejoin="round" d="m2.25 15.75 5.159-5.159a2.25 2.25 0 0 1 3.182 0l5.159 5.159m-1.5-1.5 1.409-1.409a2.25 2.25 0 0 1 3.182 0l2.909 2.909M3.75 21h16.5A2.25 2.25 0 0 0 22.5 18.75V5.25A2.25 2.25 0 0 0 20.25 3H3.75A2.25 2.25 0 0 0 1.5 5.25v13.5A2.25 2.25 0 0 0 3.75 21Z" /></svg>
-                  <span className="text-xs text-gray-500">{uploadingHeader ? 'Uploading…' : 'Upload header logo'}</span>
-                </div>
-              )}
-              <input ref={headerLogoRef} type="file" accept="image/*" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; if (f) uploadLogo(f, 'header'); }} />
-            </div>
-            {/* Footer Logo */}
-            <div>
-              <label className="block text-sm font-medium mb-2">Footer Logo</label>
-              {footerLogo ? (
-                <div className="flex items-start gap-3">
-                  <div className="w-32 h-16 rounded border bg-gray-900 flex items-center justify-center overflow-hidden p-1">
-                    {/* eslint-disable-next-line @next/next/no-img-element */}
-                    <img src={footerLogo} alt="Footer logo" className="max-w-full max-h-full object-contain" />
-                  </div>
-                  <div className="flex flex-col gap-1">
-                    <button type="button" onClick={() => footerLogoRef.current?.click()} className="text-xs text-blue-600 hover:underline">Change</button>
-                    <button type="button" onClick={() => setFooterLogo('')} className="text-xs text-red-600 hover:underline">Remove</button>
-                  </div>
-                </div>
-              ) : (
-                <div onClick={() => footerLogoRef.current?.click()} className="flex items-center gap-3 border-2 border-dashed border-gray-300 rounded-lg px-4 py-3 cursor-pointer hover:border-blue-400 hover:bg-blue-50/50 transition-colors" role="button" tabIndex={0} onKeyDown={(e) => { if (e.key === 'Enter') footerLogoRef.current?.click(); }}>
-                  <svg className="w-6 h-6 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}><path strokeLinecap="round" strokeLinejoin="round" d="m2.25 15.75 5.159-5.159a2.25 2.25 0 0 1 3.182 0l5.159 5.159m-1.5-1.5 1.409-1.409a2.25 2.25 0 0 1 3.182 0l2.909 2.909M3.75 21h16.5A2.25 2.25 0 0 0 22.5 18.75V5.25A2.25 2.25 0 0 0 20.25 3H3.75A2.25 2.25 0 0 0 1.5 5.25v13.5A2.25 2.25 0 0 0 3.75 21Z" /></svg>
-                  <span className="text-xs text-gray-500">{uploadingFooter ? 'Uploading…' : 'Upload footer logo'}</span>
-                </div>
-              )}
-              <input ref={footerLogoRef} type="file" accept="image/*" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; if (f) uploadLogo(f, 'footer'); }} />
-            </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
+            <ImageUploadField
+              label="Header Logo"
+              value={headerLogo}
+              onChange={setHeaderLogo}
+              onUploadingChange={setUploadingHeader}
+              prefer="original"
+            />
+            <ImageUploadField
+              label="Footer Logo"
+              value={footerLogo}
+              onChange={setFooterLogo}
+              onUploadingChange={setUploadingFooter}
+              prefer="original"
+            />
           </div>
         </section>
 
@@ -257,10 +354,34 @@ export default function SettingsPage() {
           </div>
         </section>
 
-        <button type="submit" disabled={saving} className="bg-blue-600 text-white px-8 py-2.5 rounded-lg text-sm font-medium hover:bg-blue-700 disabled:opacity-50 transition-colors">
-          {saving ? 'Saving…' : 'Save All Settings'}
+        <button type="submit" disabled={saving || uploadingHeader || uploadingFooter} className="bg-blue-600 text-white px-8 py-2.5 rounded-lg text-sm font-medium hover:bg-blue-700 disabled:opacity-50 transition-colors">
+          {(uploadingHeader || uploadingFooter) ? 'Uploading image…' : saving ? 'Saving…' : 'Save All Settings'}
         </button>
       </form>
+      <aside className="xl:sticky xl:top-6">
+        <div className="mb-3 flex items-center justify-between gap-3">
+          <div>
+            <h2 className="text-lg font-semibold">Frontend Preview</h2>
+            <p className="text-xs text-gray-500">Updates as you edit; save settings to publish them.</p>
+          </div>
+          {previewReady && <span className="text-xs text-green-700">Live</span>}
+        </div>
+        {previewError ? (
+          <p role="alert" className="rounded border border-red-200 bg-red-50 p-3 text-sm text-red-700">{previewError}</p>
+        ) : previewUrl ? (
+          <iframe
+            ref={previewFrame}
+            src={previewUrl}
+            title="Live Oorum Uravum frontend preview"
+            className="h-[760px] w-full rounded-lg border border-gray-300 bg-white shadow"
+          />
+        ) : (
+          <div role="status" className="flex h-[760px] items-center justify-center rounded-lg border border-gray-200 bg-white text-sm text-gray-500">
+            Loading preview…
+          </div>
+        )}
+      </aside>
+      </div>
     </div>
   );
 }

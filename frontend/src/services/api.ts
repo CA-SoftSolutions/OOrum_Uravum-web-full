@@ -27,9 +27,16 @@ export interface Category {
   id: string;
   name: string;
   slug: string;
+  path?: string | null;
   description?: string | null;
+  iconUrl?: string | null;
+  iconKey?: string | null;
   parentId?: string | null;
+  parent?: Pick<Category, 'id' | 'name' | 'slug'> | null;
   children?: Category[];
+  _count?: {
+    articles?: number;
+  };
 }
 
 export interface Tag {
@@ -83,11 +90,35 @@ export class ApiRequestError extends Error {
   }
 }
 
+// Rows seeded from a local dev database can store absolute media URLs such as
+// `http://localhost:4000/uploads/…`. Browsers cannot reach those, so rewrite any
+// localhost/loopback backend URL found in API payloads to the public backend
+// origin before it reaches a component.
+const LOCAL_BACKEND_URL_RE = /(?:https?:)?\/\/(?:localhost|127\.0\.0\.1|\[::1\])(?::\d+)?/gi;
+
+function rewriteLocalBackendUrls(value: unknown): unknown {
+  if (typeof value === 'string') {
+    return value.replace(LOCAL_BACKEND_URL_RE, PUBLIC_ORIGIN);
+  }
+  if (Array.isArray(value)) {
+    return value.map(rewriteLocalBackendUrls);
+  }
+  if (value !== null && typeof value === 'object') {
+    const out: Record<string, unknown> = {};
+    for (const [key, entry] of Object.entries(value)) {
+      out[key] = rewriteLocalBackendUrls(entry);
+    }
+    return out;
+  }
+  return value;
+}
+
 async function fetchApi<T>(
   path: string,
   options?: RequestInit,
+  baseUrl = BASE_URL,
 ): Promise<T> {
-  const url = `${BASE_URL}${path}`;
+  const url = `${baseUrl}${path}`;
   const res = await fetch(url, {
     ...options,
     headers: {
@@ -108,7 +139,7 @@ async function fetchApi<T>(
     throw new ApiRequestError(res.status, body);
   }
 
-  return res.json() as Promise<T>;
+  return rewriteLocalBackendUrls(await res.json()) as T;
 }
 
 // ─── Query param builder ─────────────────────────────────────────────────────
@@ -143,13 +174,13 @@ export async function getArticles(
 ): Promise<PaginatedResponse<Article>> {
   const qs = params ? toQueryString(params as Record<string, unknown>) : '';
   return fetchApi<PaginatedResponse<Article>>(`/articles${qs}`, {
-    next: { revalidate: 60, tags: ['articles'] },
+    next: { revalidate: 10, tags: ['articles'] },
   });
 }
 
 export async function getArticleBySlug(slug: string): Promise<Article> {
   return fetchApi<Article>(`/articles/${encodeURIComponent(slug)}`, {
-    next: { revalidate: 60, tags: ['articles', `article-${slug}`] },
+    next: { revalidate: 10, tags: ['articles', `article-${slug}`] },
   });
 }
 
@@ -161,7 +192,47 @@ export async function getBreakingArticles(): Promise<PaginatedResponse<Article>>
 
 export async function getCategories(): Promise<Category[]> {
   return fetchApi<Category[]>('/categories', {
-    next: { revalidate: 300, tags: ['categories'] },
+    next: { revalidate: 600, tags: ['categories'] },
+  }, typeof window === 'undefined' ? undefined : '/api');
+}
+
+export interface CategoryLatestArticle {
+  id: string;
+  title: string;
+  slug: string;
+  excerpt: string | null;
+  featuredImage: string | null;
+  publishedAt: string;
+}
+
+export interface CategoryWithLatest {
+  id: string;
+  name: string;
+  slug: string;
+  description: string | null;
+  iconUrl?: string | null;
+  iconKey?: string | null;
+  article: CategoryLatestArticle | null;
+}
+
+/**
+ * Resolve the URL path for a category.
+ * If the category has a custom path, use it; otherwise default to /category/{slug}
+ */
+export function resolveCategoryPath(category: Category): string {
+  if (category.path && category.path.trim().length > 0) {
+    // Ensure path starts with /
+    const path = category.path.trim();
+    return path.startsWith('/') ? path : `/${path}`;
+  }
+  return `/category/${category.slug}`;
+}
+
+/** Categories paired with their latest published article — powers the category card row. */
+export async function getCategoriesWithLatest(rootOnly = true): Promise<CategoryWithLatest[]> {
+  const qs = toQueryString({ rootOnly: rootOnly ? undefined : 'false' });
+  return fetchApi<CategoryWithLatest[]>(`/categories/with-latest${qs}`, {
+    next: { revalidate: 600, tags: ['categories', 'articles'] },
   });
 }
 
@@ -169,7 +240,7 @@ export async function getCategories(): Promise<Category[]> {
 
 export async function getTags(): Promise<Tag[]> {
   return fetchApi<Tag[]>('/tags', {
-    next: { revalidate: 300, tags: ['tags'] },
+    next: { revalidate: 30, tags: ['tags'] },
   });
 }
 
@@ -177,26 +248,38 @@ export async function getTags(): Promise<Tag[]> {
 
 export async function getAuthors(): Promise<Author[]> {
   return fetchApi<Author[]>('/authors', {
-    next: { revalidate: 300, tags: ['authors'] },
+    next: { revalidate: 30, tags: ['authors'] },
   });
 }
 
 export async function getAuthorBySlug(slug: string): Promise<Author> {
   return fetchApi<Author>(`/authors/${encodeURIComponent(slug)}`, {
-    next: { revalidate: 300, tags: ['authors'] },
+    next: { revalidate: 30, tags: ['authors'] },
   });
 }
 
 // ─── Search endpoint ─────────────────────────────────────────────────────────
 
-export async function searchArticles(
+export interface SearchResult {
+  id: string;
+  type: 'article' | 'obituary' | 'video';
+  title: string;
+  slug: string;
+  description: string | null;
+  imageUrl: string | null;
+  publishedAt: string | null;
+}
+
+export async function searchSiteContent(
   query: string,
   page?: number,
-): Promise<PaginatedResponse<Article>> {
+  signal?: AbortSignal,
+): Promise<PaginatedResponse<SearchResult>> {
   const qs = toQueryString({ q: query, page });
-  return fetchApi<PaginatedResponse<Article>>(`/search${qs}`, {
+  return fetchApi<PaginatedResponse<SearchResult>>(`/search${qs}`, {
     next: { revalidate: 0 },
-  });
+    signal,
+  }, '/api');
 }
 
 // ─── Site settings endpoint ──────────────────────────────────────────────────
@@ -207,8 +290,45 @@ export interface Obituary {
   slug: string;
   content: string;
   sourceUrl: string | null;
+  imageUrl: string | null;
+  imageMimeType: string | null;
+  firstName: string | null;
+  middleName: string | null;
+  surname: string | null;
+  otherNames: string | null;
+  dateOfBirth: string | null;
+  dateOfDeath: string | null;
+  placeOfBirth: string | null;
+  lastResidentialAddress: string | null;
+  fatherName: string | null;
+  motherName: string | null;
+  maritalStatus: string | null;
+  spouseName: string | null;
+  brothersNames: string | null;
+  sistersNames: string | null;
+  fatherInLawName: string | null;
+  motherInLawName: string | null;
+  sonsNames: string | null;
+  daughtersNames: string | null;
+  sonsInLawNames: string | null;
+  daughtersInLawNames: string | null;
+  grandchildrenNames: string | null;
+  occupations: string | null;
+  hobbiesInterests: string | null;
+  communityActivities: string | null;
+  otherDetails: string | null;
+  lifeStory: string | null;
   publishedAt: string;
   createdAt: string;
+}
+
+export function getObituaryImageUrl(
+  obituary: Pick<Obituary, 'id' | 'imageUrl' | 'imageMimeType'>,
+): string | null {
+  if (obituary.imageMimeType) {
+    return `/api/obituaries/${encodeURIComponent(obituary.id)}/image`;
+  }
+  return obituary.imageUrl;
 }
 
 export async function getObituaries(
@@ -216,15 +336,73 @@ export async function getObituaries(
 ): Promise<PaginatedResponse<Obituary>> {
   const qs = params ? toQueryString(params as Record<string, unknown>) : '';
   return fetchApi<PaginatedResponse<Obituary>>(`/obituaries${qs}`, {
-    next: { revalidate: 60, tags: ['obituaries'] },
+    next: { revalidate: 10, tags: ['obituaries'] },
   });
 }
 
-export async function getSiteSettings(): Promise<Record<string, string>> {
-  return fetchApi<Record<string, string>>('/settings/public', {
-    next: { revalidate: 300, tags: ['settings'] },
+export interface SiteSettings {
+  siteTitle?: string;
+  siteDescription?: string;
+  siteTagline?: string;
+  analyticsId?: string;
+  socialLinks?: string;
+  homeLayout?: string;
+  heroConfig?: string;
+  headerLogo?: string;
+  footerLogo?: string;
+  themeColors?: string;
+  videoHeroConfig?: string;
+  [key: string]: string | undefined;
+}
+
+export async function getSiteSettings(): Promise<SiteSettings> {
+  return fetchApi<SiteSettings>('/settings/public', {
+    next: { revalidate: 30, tags: ['settings'] },
   });
 }
+
+/**
+ * Public origin of the backend, used to build `<img src>` values.
+ *
+ * Only `NEXT_PUBLIC_API_URL` is considered, never `INTERNAL_API_URL`: an
+ * `<img src>` is emitted into SSR HTML and shipped to the browser, so a Docker
+ * internal hostname such as `http://backend:4000` would be embedded verbatim and
+ * the browser could not resolve it.
+ */
+const PUBLIC_ORIGIN = (process.env.NEXT_PUBLIC_MEDIA_ORIGIN
+  || (process.env.NEXT_PUBLIC_API_URL || 'http://localhost:4000/api')
+    .replace(/\/api\/?$/, ''))
+  .replace(/\/+$/, '');
+
+/**
+ * Turns a stored logo path into a URL the browser can actually load.
+ *
+ * The publisher dashboard writes an absolute URL, but a row that was seeded or
+ * edited by hand holds the backend's own relative form (`/uploads/original/…`).
+ * The backend serves `/uploads` from its root, outside the `/api` prefix every
+ * API URL carries, so a relative value must be resolved against the backend
+ * origin — otherwise the browser requests it from this app's origin, gets a 404,
+ * and the header/footer shows a broken image with no recovery.
+ *
+ * Returns `null` for anything unrenderable so callers fall back to the bundled
+ * wordmark instead of emitting an `<img>` with a broken `src`.
+ */
+export function resolveAssetUrl(path: string | null | undefined): string | null {
+  if (!path) return null;
+  const value = path.trim();
+  if (!value) return null;
+  // Absolute URLs were validated by the API; pass them through as-is.
+  if (/^https?:\/\//i.test(value)) return value;
+  if (value.startsWith('/uploads/')) return `${PUBLIC_ORIGIN}${value}`;
+  // Same-origin static asset (for example the bundled `/logo.png`).
+  // `//host/...` is rejected: it is protocol-relative, so it would silently
+  // resolve to a third-party origin rather than this app.
+  if (value.startsWith('/') && !value.startsWith('//')) return value;
+  return null;
+}
+
+/** Bundled wordmark, used whenever the site has no usable logo configured. */
+export const DEFAULT_LOGO_SRC = '/logo.png';
 
 export interface HomeLayoutSection {
   id: string;
@@ -268,15 +446,46 @@ export interface ThemeColors {
   cardBg: string;
 }
 
-export async function getThemeColors(): Promise<ThemeColors | null> {
-  const settings = await getSiteSettings();
-  if (!settings.themeColors) return null;
-  try { return JSON.parse(settings.themeColors); } catch { return null; }
+function isThemeColors(value: unknown): value is ThemeColors {
+  if (typeof value !== 'object' || value === null) return false;
+  const colors = value as Record<string, unknown>;
+  const isHexColor = (color: unknown): color is string => (
+    typeof color === 'string' && /^#[\da-f]{6}$/i.test(color)
+  );
+  return isHexColor(colors.primaryDark)
+    && isHexColor(colors.accentRed)
+    && isHexColor(colors.background)
+    && isHexColor(colors.foreground)
+    && isHexColor(colors.cardBg);
 }
 
-export async function getLogos(): Promise<{ headerLogo: string; footerLogo: string }> {
+export function parseThemeColors(value: string | undefined): ThemeColors | null {
+  if (!value) return null;
+  try {
+    const parsed: unknown = JSON.parse(value);
+    return isThemeColors(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+export async function getThemeColors(): Promise<ThemeColors | null> {
   const settings = await getSiteSettings();
-  return { headerLogo: settings.headerLogo || '', footerLogo: settings.footerLogo || '' };
+  return parseThemeColors(settings.themeColors);
+}
+
+/**
+ * Resolved logo URL for the header or footer, falling back to the bundled
+ * wordmark when the setting is empty, unreachable or not a renderable URL.
+ */
+export async function getLogo(kind: 'header' | 'footer'): Promise<string> {
+  try {
+    const settings = await getSiteSettings();
+    const stored = kind === 'header' ? settings.headerLogo : settings.footerLogo;
+    return resolveAssetUrl(stored) ?? DEFAULT_LOGO_SRC;
+  } catch {
+    return DEFAULT_LOGO_SRC;
+  }
 }
 
 // ─── Video endpoints ─────────────────────────────────────────────────────────
@@ -300,19 +509,47 @@ export interface VideoPost {
 
 export async function getVideoPosts(): Promise<VideoPost[]> {
   return fetchApi<VideoPost[]>('/videos', {
-    next: { revalidate: 60, tags: ['videos'] },
+    next: { revalidate: 10, tags: ['videos'] },
   });
 }
 
 export async function getVideoBySlug(slug: string): Promise<VideoPost> {
   return fetchApi<VideoPost>(`/videos/${encodeURIComponent(slug)}`, {
-    next: { revalidate: 60, tags: ['videos', `video-${slug}`] },
+    next: { revalidate: 10, tags: ['videos', `video-${slug}`] },
   });
 }
 
 export async function getObituaryBySlug(slug: string): Promise<Obituary> {
   return fetchApi<Obituary>(`/obituaries/slug/${encodeURIComponent(slug)}`, {
-    next: { revalidate: 60, tags: ['obituaries', `obituary-${slug}`] },
+    next: { revalidate: 10, tags: ['obituaries', `obituary-${slug}`] },
+  });
+}
+
+// ─── Advertisement endpoints ─────────────────────────────────────────────────
+
+export interface Advertisement {
+  id: string;
+  title: string;
+  description: string | null;
+  imageUrl: string | null;
+  linkUrl: string | null;
+  position: string;
+  cropPosition: string | null;
+  active: boolean;
+  order: number;
+  variant: string;
+  badge: string | null;
+  metaText: string | null;
+  icon: string | null;
+  linkLabel: string | null;
+}
+
+export async function getAdvertisements(
+  position?: 'sidebar' | 'banner' | 'header',
+): Promise<Advertisement[]> {
+  const qs = position ? toQueryString({ position }) : '';
+  return fetchApi<Advertisement[]>(`/ads${qs}`, {
+    next: { revalidate: 60, tags: ['ads'] },
   });
 }
 
@@ -324,7 +561,7 @@ export interface VideoCat {
 
 export async function getVideoCategories(): Promise<VideoCat[]> {
   return fetchApi<VideoCat[]>('/videos/categories', {
-    next: { revalidate: 300, tags: ['videos'] },
+    next: { revalidate: 30, tags: ['videos'] },
   });
 }
 

@@ -1,5 +1,6 @@
-import { Router, Response } from 'express';
+import { Router, Request, Response } from 'express';
 import { z } from 'zod';
+import multer from 'multer';
 import { prisma } from '../lib/prisma';
 import { requireAuth, requireRole, AuthenticatedRequest } from '../lib/auth';
 import {
@@ -9,30 +10,74 @@ import {
   addTagsToKey,
   CATEGORY_TTL,
 } from '../lib/cache';
-import { generateUniqueSlug } from '../lib/slug';
+import { generateUniqueSlug, isValidSlug } from '../lib/slug';
 import { revalidateFrontend } from '../lib/revalidate';
+import { CATEGORY_ICON_KEYS, isCategoryIconKey } from '../lib/categoryIcons';
+import { storeCategoryIcon, isValidIconUrl } from '../lib/categoryIconUpload';
+import { isValidPath } from '../lib/path';
 
 const router = Router();
 
-// ─── Zod Schemas ─────────────────────────────────────────────────────────────
+const UPLOAD_PATH = process.env.MEDIA_UPLOAD_PATH;
+if (!UPLOAD_PATH) {
+  throw new Error('MEDIA_UPLOAD_PATH environment variable is not set');
+}
+
+const iconUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 512 * 1024, files: 1 },
+});
+
+// ─── Zod Schemas ──────────────────────────────────────────────────────────────
+
+const iconUrlSchema = z
+  .string()
+  .max(500)
+  .refine(isValidIconUrl, { message: 'Icon URL must be an uploaded icon or an http(s) URL' });
+
+const iconKeySchema = z
+  .string()
+  .refine(isCategoryIconKey, { message: 'Unknown icon key' });
+
+const slugSchema = z
+  .string()
+  .min(1, 'Slug cannot be empty')
+  .max(100, 'Slug is too long')
+  .refine(isValidSlug, { message: 'Slug must contain only lowercase letters, numbers, and hyphens' })
+  .optional();
+
+const pathSchema = z
+  .string()
+  .max(100, 'Path is too long')
+  .refine(isValidPath, { message: 'Path must start with / and contain only lowercase letters, numbers, and hyphens' })
+  .optional()
+  .nullable();
 
 const createCategorySchema = z.object({
   name: z.string().min(1, 'Name is required'),
   description: z.string().optional(),
   parentId: z.string().optional(),
+  iconUrl: iconUrlSchema.optional().nullable(),
+  iconKey: iconKeySchema.optional().nullable(),
+  slug: slugSchema,
+  path: pathSchema,
 });
 
 const updateCategorySchema = z.object({
   name: z.string().min(1, 'Name is required').optional(),
-  description: z.string().nullable().optional(),
-  parentId: z.string().nullable().optional(),
+  description: z.string().optional().nullable(),
+  parentId: z.string().optional().nullable(),
+  iconUrl: iconUrlSchema.optional().nullable(),
+  iconKey: iconKeySchema.optional().nullable(),
+  slug: slugSchema,
+  path: pathSchema,
 });
 
-// ─── GET / — List all categories with hierarchy ──────────────────────────────
+// ─── GET / — List all categories with hierarchy ───────────────────────────────
 
 router.get('/', async (_req: AuthenticatedRequest, res: Response) => {
   try {
-    const cacheKey = 'categories:list';
+    const cacheKey = 'categories:list:v2';
 
     const cached = await getCached<unknown>(cacheKey);
     if (cached) {
@@ -42,7 +87,18 @@ router.get('/', async (_req: AuthenticatedRequest, res: Response) => {
 
     const categories = await prisma.category.findMany({
       include: {
-        children: { select: { id: true, name: true, slug: true, description: true, parentId: true } },
+        children: {
+          select: {
+            id: true,
+            name: true,
+            slug: true,
+            path: true,
+            description: true,
+            parentId: true,
+            iconUrl: true,
+            iconKey: true,
+          },
+        },
         parent: { select: { id: true, name: true, slug: true } },
         _count: { select: { articles: true } },
       },
@@ -62,7 +118,141 @@ router.get('/', async (_req: AuthenticatedRequest, res: Response) => {
 });
 
 
-// ─── POST / — Create category (Editor+ role) ────────────────────────────────
+// ─── GET /with-latest — Categories with their latest published article ────────
+
+router.get('/with-latest', async (req: Request, res: Response) => {
+  try {
+    const rootOnly = req.query.rootOnly !== 'false';
+    const cacheKey = `categories:with-latest:${rootOnly ? 'root' : 'all'}`;
+
+    const cached = await getCached<unknown>(cacheKey);
+    if (cached) {
+      res.json(cached);
+      return;
+    }
+
+    // Fetch the whole category tree — subcategory articles roll up to their
+    // root category so root cards show the latest article anywhere in the branch.
+    const allCategories = await prisma.category.findMany({
+      select: { id: true, name: true, slug: true, description: true, iconUrl: true, iconKey: true, parentId: true },
+      orderBy: { name: 'asc' },
+    });
+    const categories = rootOnly ? allCategories.filter((c) => !c.parentId) : allCategories;
+
+    const byId = new Map(allCategories.map((c) => [c.id, c]));
+    const rootIdOf = (id: string): string => {
+      let current = byId.get(id);
+      let last = id;
+      for (let guard = 0; current && guard < 50; guard++) {
+        last = current.id;
+        if (!current.parentId) return current.id;
+        current = byId.get(current.parentId);
+      }
+      return last;
+    };
+
+    // Fetch all latest articles in a single query to avoid N+1
+    const allCategoryIds = allCategories.map((c) => c.id);
+    const latestArticles = await prisma.article.findMany({
+      where: {
+        categoryId: { in: allCategoryIds },
+        status: 'PUBLISHED',
+      },
+      orderBy: [{ publishedAt: 'desc' }, { createdAt: 'desc' }],
+      select: {
+        id: true,
+        title: true,
+        slug: true,
+        excerpt: true,
+        featuredImage: true,
+        publishedAt: true,
+        categoryId: true,
+      },
+    });
+
+    // Create a map of categoryId -> latest article (root-aggregated when rootOnly)
+    const articleMap = new Map<string, typeof latestArticles[0]>();
+    for (const article of latestArticles) {
+      const key = rootOnly ? rootIdOf(article.categoryId) : article.categoryId;
+      if (!articleMap.has(key)) {
+        articleMap.set(key, article);
+      }
+    }
+
+    // Map articles to categories
+    const withLatest = categories.map(({ parentId: _parentId, ...cat }) => ({
+      ...cat,
+      article: articleMap.get(cat.id) || null,
+    }));
+
+    await setCached(cacheKey, withLatest, CATEGORY_TTL);
+    await addTagsToKey(cacheKey, ['categories', 'articles']);
+
+    res.json(withLatest);
+  } catch (err) {
+    console.error('[categories] GET /with-latest error:', err);
+    res.status(500).json({
+      error: { code: 'INTERNAL_ERROR', message: 'Failed to fetch categories with latest article' },
+    });
+  }
+});
+
+
+// ─── GET /meta/icons — Built-in icon keys for the dashboard picker ────────────
+
+router.get('/meta/icons', (_req: Request, res: Response) => {
+  res.json({ icons: CATEGORY_ICON_KEYS });
+});
+
+// ─── POST /icon — Upload a category icon (Editor+ role) ───────────────────────
+//
+// Returns { url, width, height }. The stored file is always a sanitized,
+// rasterized PNG — see lib/categoryIconUpload.ts.
+
+router.post(
+  '/icon',
+  requireAuth,
+  requireRole('ADMIN', 'EDITOR'),
+  (req: AuthenticatedRequest, res: Response, next) => {
+    iconUpload.single('file')(req, res, (err) => {
+      if (err) {
+        if (err instanceof multer.MulterError && err.code === 'LIMIT_FILE_SIZE') {
+          res.status(400).json({
+            error: { code: 'FILE_TOO_LARGE', message: 'Icon must be smaller than 512KB' },
+          });
+          return;
+        }
+        res.status(400).json({
+          error: { code: 'UPLOAD_ERROR', message: err.message },
+        });
+        return;
+      }
+      next();
+    });
+  },
+  async (_req: AuthenticatedRequest, res: Response) => {
+    try {
+      if (!_req.file) {
+        res.status(400).json({
+          error: { code: 'NO_FILE', message: 'No file provided' },
+        });
+        return;
+      }
+
+      const stored = await storeCategoryIcon(_req.file.buffer, UPLOAD_PATH);
+      res.status(201).json(stored);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to process icon';
+      console.error('[categories] POST /icon error:', err);
+      res.status(400).json({
+        error: { code: 'INVALID_ICON', message },
+      });
+    }
+  },
+);
+
+
+// ─── POST / — Create category (Editor+ role) ──────────────────────────────────
 
 router.post(
   '/',
@@ -82,7 +272,7 @@ router.post(
     }
 
     try {
-      const { name, description, parentId } = parsed.data;
+      const { name, description, parentId, iconUrl, iconKey, slug: customSlug, path: customPath } = parsed.data;
 
       // Verify parent exists if provided
       if (parentId) {
@@ -95,24 +285,41 @@ router.post(
         }
       }
 
-      const slug = await generateUniqueSlug(name, 'category');
+      // Use custom slug if provided, otherwise generate from name
+      let slug: string;
+      if (customSlug) {
+        // Check if custom slug already exists
+        const existing = await prisma.category.findUnique({ where: { slug: customSlug } });
+        if (existing) {
+          res.status(400).json({
+            error: { code: 'SLUG_EXISTS', message: 'A category with this slug already exists' },
+          });
+          return;
+        }
+        slug = customSlug;
+      } else {
+        slug = await generateUniqueSlug(name, 'category');
+      }
 
       const category = await prisma.category.create({
         data: {
           name,
           slug,
+          path: customPath ?? null,
           description: description ?? null,
           parentId: parentId ?? null,
+          iconUrl: iconUrl ?? null,
+          iconKey: iconKey ?? null,
         },
         include: {
-          children: { select: { id: true, name: true, slug: true, description: true, parentId: true } },
+          children: { select: { id: true, name: true, slug: true, description: true, parentId: true, iconUrl: true, iconKey: true } },
           parent: { select: { id: true, name: true, slug: true } },
           _count: { select: { articles: true } },
         },
       });
 
       // Invalidate category list cache
-      await invalidateByTags(['categories']);
+      await invalidateByTags(['categories', 'search']);
       revalidateFrontend();
 
       res.status(201).json(category);
@@ -125,7 +332,7 @@ router.post(
   },
 );
 
-// ─── PUT /:id — Update category (Editor+ role) ──────────────────────────────
+// ─── PUT /:id — Update category (Editor+ role) ────────────────────────────────
 
 router.put(
   '/:id',
@@ -155,7 +362,7 @@ router.put(
         return;
       }
 
-      const { name, description, parentId } = parsed.data;
+const { name, description, parentId, iconUrl, iconKey, slug: customSlug, path: customPath } = parsed.data;
 
       // Verify parent exists if changing
       if (parentId !== undefined && parentId !== null) {
@@ -176,10 +383,38 @@ router.put(
         }
       }
 
-      // Regenerate slug if name changed
+      // Handle slug changes
       let newSlug: string | undefined;
-      if (name && name !== existing.name) {
+      if (customSlug !== undefined) {
+        // Custom slug provided - validate uniqueness
+        if (customSlug !== existing.slug) {
+          const existingWithSlug = await prisma.category.findUnique({ where: { slug: customSlug } });
+          if (existingWithSlug && existingWithSlug.id !== id) {
+            res.status(400).json({
+              error: { code: 'SLUG_EXISTS', message: 'A category with this slug already exists' },
+            });
+            return;
+          }
+          newSlug = customSlug;
+        }
+      } else if (name && name !== existing.name) {
+        // Name changed without custom slug - regenerate from name
         newSlug = await generateUniqueSlug(name, 'category');
+      }
+
+      // Handle path changes - validate uniqueness
+      let newPath: string | null | undefined;
+      if (customPath !== undefined) {
+        if (customPath !== existing.path) {
+          const existingWithPath = await prisma.category.findUnique({ where: { path: customPath! } });
+          if (existingWithPath && existingWithPath.id !== id) {
+            res.status(400).json({
+              error: { code: 'PATH_EXISTS', message: 'A category with this custom path already exists' },
+            });
+            return;
+          }
+          newPath = customPath;
+        }
       }
 
       const category = await prisma.category.update({
@@ -187,18 +422,21 @@ router.put(
         data: {
           ...(name !== undefined && { name }),
           ...(newSlug && { slug: newSlug }),
+          ...(customPath !== undefined && { path: customPath }),
           ...(description !== undefined && { description }),
           ...(parentId !== undefined && { parentId }),
+          ...(iconUrl !== undefined && { iconUrl }),
+          ...(iconKey !== undefined && { iconKey }),
         },
         include: {
-          children: { select: { id: true, name: true, slug: true, description: true, parentId: true } },
+          children: { select: { id: true, name: true, slug: true, description: true, parentId: true, iconUrl: true, iconKey: true } },
           parent: { select: { id: true, name: true, slug: true } },
           _count: { select: { articles: true } },
         },
       });
 
       // Invalidate caches
-      await invalidateByTags(['categories', `category:${id}`]);
+      await invalidateByTags(['categories', 'search', `category:${id}`]);
       revalidateFrontend();
 
       res.json(category);
@@ -211,7 +449,7 @@ router.put(
   },
 );
 
-// ─── DELETE /:id — Delete category (Admin only) ─────────────────────────────
+// ─── DELETE /:id — Delete category (Admin only) ───────────────────────────────
 // Rejects deletion if articles are associated (Restrict on delete per Req 15.5)
 
 router.delete(
@@ -248,7 +486,7 @@ router.delete(
       await prisma.category.delete({ where: { id } });
 
       // Invalidate caches
-      await invalidateByTags(['categories', `category:${id}`]);
+      await invalidateByTags(['categories', 'search', `category:${id}`]);
       revalidateFrontend();
 
       res.json({ message: 'Category deleted successfully' });
