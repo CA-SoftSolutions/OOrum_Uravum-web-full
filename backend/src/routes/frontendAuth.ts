@@ -511,7 +511,12 @@ router.get('/me/activity', async (req: Request, res: Response) => {
         },
       }),
       prisma.obituary.findMany({
-        where: { submitterEmail: user.email },
+        where: {
+          OR: [
+            { frontendUserId: user.id },
+            { frontendUserId: null, submitterEmail: user.email },
+          ],
+        },
         orderBy: { createdAt: 'desc' },
         take: 100,
         select: {
@@ -645,7 +650,27 @@ function parseFamilyData(raw: string | null | undefined): Record<string, { name:
   }
 }
 
-// GET /family-details — current user's saved family details (own record only)
+const familyEntrySchema = z.object({
+  id: z.string().max(30).optional(),
+  label: z.string().max(200).optional().transform((v) => v ? sanitizeText(v.trim()) : ''),
+  data: familyDataSchema,
+});
+
+function serializeFamilyEntry(record: {
+  id: string; label: string; version: number; data: string;
+  createdAt: Date; updatedAt: Date;
+}) {
+  return {
+    id: record.id,
+    label: record.label,
+    data: parseFamilyData(record.data),
+    version: record.version,
+    createdAt: record.createdAt,
+    updatedAt: record.updatedAt,
+  };
+}
+
+// GET /family-details — all of the current user's saved family entries (own records only)
 router.get('/family-details', async (req: Request, res: Response) => {
   const user = await resolveFrontendUser(req);
   if (!user) {
@@ -653,19 +678,19 @@ router.get('/family-details', async (req: Request, res: Response) => {
     return;
   }
   try {
-    const record = await prisma.frontendObituaryFamily.findUnique({ where: { userId: user.id } });
-    if (!record) {
-      res.json({ data: null, version: 0, updatedAt: null });
-      return;
-    }
-    res.json({ data: parseFamilyData(record.data), version: record.version, updatedAt: record.updatedAt });
+    const rows = await prisma.frontendObituaryFamily.findMany({
+      where: { userId: user.id },
+      orderBy: { updatedAt: 'desc' },
+      take: 100,
+    });
+    res.json({ entries: rows.map(serializeFamilyEntry) });
   } catch (err) {
     console.error('[frontendAuth] GET /family-details error:', err);
     res.status(500).json({ error: { code: 'INTERNAL_ERROR', message: 'Failed to load family details' } });
   }
 });
 
-// PUT /family-details — create or update own family details; every save is audited
+// PUT /family-details — create a new entry or update an own entry; every save is audited
 router.put('/family-details', async (req: Request, res: Response) => {
   const user = await resolveFrontendUser(req);
   if (!user) {
@@ -673,7 +698,7 @@ router.put('/family-details', async (req: Request, res: Response) => {
     return;
   }
 
-  const parsed = familyDataSchema.safeParse(req.body?.data ?? req.body);
+  const parsed = familyEntrySchema.safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({
       error: { code: 'VALIDATION_ERROR', message: 'Invalid data', details: parsed.error.flatten().fieldErrors },
@@ -684,7 +709,7 @@ router.put('/family-details', async (req: Request, res: Response) => {
   // Normalise: drop empty names, de-dupe per field, cap serialized size
   const data: Record<string, { name: string; alive: boolean }[]> = {};
   for (const field of OBITUARY_FAMILY_FIELDS) {
-    const list = parsed.data[field];
+    const list = parsed.data.data[field];
     if (!list) continue;
     const seen = new Set<string>();
     const cleaned = list
@@ -699,23 +724,32 @@ router.put('/family-details', async (req: Request, res: Response) => {
     return;
   }
 
+  const label = parsed.data.label ?? '';
+  const entryId = parsed.data.id;
+
   try {
     const result = await prisma.$transaction(async (tx) => {
-      const existing = await tx.frontendObituaryFamily.findUnique({ where: { userId: user.id } });
-      const version = (existing?.version ?? 0) + 1;
+      const existing = entryId
+        ? await tx.frontendObituaryFamily.findFirst({ where: { id: entryId, userId: user.id } })
+        : null;
 
+      if (entryId && !existing) return { error: 'NOT_FOUND' as const };
+
+      const version = (existing?.version ?? 0) + 1;
       const record = existing
         ? await tx.frontendObituaryFamily.update({
             where: { id: existing.id },
-            data: { data: serialized, version },
+            data: { data: serialized, version, label: label || existing.label },
           })
         : await tx.frontendObituaryFamily.create({
-            data: { userId: user.id, data: serialized, version },
+            data: { userId: user.id, label, data: serialized, version },
           });
 
       await tx.frontendObituaryFamilyAudit.create({
         data: {
           userId: user.id,
+          familyId: record.id,
+          label: record.label,
           version,
           action: existing ? 'UPDATED' : 'CREATED',
           beforeData: existing?.data ?? null,
@@ -723,13 +757,58 @@ router.put('/family-details', async (req: Request, res: Response) => {
         },
       });
 
-      return record;
+      return { record };
     });
 
-    res.json({ data: parseFamilyData(result.data), version: result.version, updatedAt: result.updatedAt });
+    if ('error' in result) {
+      res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Family entry not found' } });
+      return;
+    }
+
+    res.json(serializeFamilyEntry(result.record));
   } catch (err) {
     console.error('[frontendAuth] PUT /family-details error:', err);
     res.status(500).json({ error: { code: 'INTERNAL_ERROR', message: 'Failed to save family details' } });
+  }
+});
+
+// DELETE /family-details/:id — delete an own saved entry; deletion is audited
+router.delete('/family-details/:id', async (req: Request, res: Response) => {
+  const user = await resolveFrontendUser(req);
+  if (!user) {
+    res.status(401).json({ error: { code: 'UNAUTHORIZED', message: 'Login is required' } });
+    return;
+  }
+
+  try {
+    const id = req.params.id as string;
+    const result = await prisma.$transaction(async (tx) => {
+      const existing = await tx.frontendObituaryFamily.findFirst({ where: { id, userId: user.id } });
+      if (!existing) return null;
+
+      await tx.frontendObituaryFamilyAudit.create({
+        data: {
+          userId: user.id,
+          familyId: existing.id,
+          label: existing.label,
+          version: existing.version,
+          action: 'DELETED',
+          beforeData: existing.data,
+          afterData: '{}',
+        },
+      });
+      await tx.frontendObituaryFamily.delete({ where: { id: existing.id } });
+      return existing;
+    });
+
+    if (!result) {
+      res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Family entry not found' } });
+      return;
+    }
+    res.json({ message: 'Family entry deleted' });
+  } catch (err) {
+    console.error('[frontendAuth] DELETE /family-details/:id error:', err);
+    res.status(500).json({ error: { code: 'INTERNAL_ERROR', message: 'Failed to delete family entry' } });
   }
 });
 
@@ -758,6 +837,8 @@ router.get('/admin/family-audit', requireAuth, requireRole('ADMIN'), async (req:
     res.json({
       data: rows.map((r) => ({
         id: r.id,
+        familyId: r.familyId,
+        label: r.label,
         version: r.version,
         action: r.action,
         createdAt: r.createdAt,
@@ -776,7 +857,7 @@ router.get('/admin/family-audit', requireAuth, requireRole('ADMIN'), async (req:
   }
 });
 
-// GET /admin/family-details — list users who have saved family details (CMS admin)
+// GET /admin/family-details — list saved family entries across users (CMS admin)
 router.get('/admin/family-details', requireAuth, requireRole('ADMIN'), async (_req: AuthenticatedRequest, res: Response) => {
   try {
     const rows = await prisma.frontendObituaryFamily.findMany({
@@ -786,7 +867,9 @@ router.get('/admin/family-details', requireAuth, requireRole('ADMIN'), async (_r
     });
     res.json({
       data: rows.map((r) => ({
+        id: r.id,
         userId: r.userId,
+        label: r.label,
         version: r.version,
         updatedAt: r.updatedAt,
         data: parseFamilyData(r.data),

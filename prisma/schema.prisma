@@ -47,24 +47,27 @@ model FrontendUser {
   createdAt     DateTime  @default(now()) @map("created_at")
   updatedAt     DateTime  @updatedAt @map("updated_at")
 
-  obituaryFamily       FrontendObituaryFamily?
+  obituaryFamily       FrontendObituaryFamily[]
   obituaryFamilyAudits FrontendObituaryFamilyAudit[]
+  obituarySubmissions  Obituary[]               @relation("ObituarySubmissions")
 
   @@map("frontend_users")
 }
 
-// Saved obituary family details — one record per frontend user, versioned.
-// `data` is a JSON document:
+// Saved obituary family details — multiple named drafts per frontend user,
+// versioned. `data` is a JSON document:
 // { "spouse": [{"name": "...", "alive": true}], "sonsInLaw": [...], ... }
 model FrontendObituaryFamily {
   id        String       @id @default(cuid()) @db.VarChar(30)
-  userId    String       @unique @map("user_id") @db.VarChar(30)
+  userId    String       @map("user_id") @db.VarChar(30)
   user      FrontendUser @relation(fields: [userId], references: [id], onDelete: Cascade)
+  label     String       @default("") @db.VarChar(200)
   data      String       @db.LongText
   version   Int          @default(1)
   createdAt DateTime     @default(now()) @map("created_at")
   updatedAt DateTime     @updatedAt @map("updated_at")
 
+  @@index([userId, updatedAt])
   @@map("frontend_obituary_family")
 }
 
@@ -73,13 +76,16 @@ model FrontendObituaryFamilyAudit {
   id         String       @id @default(cuid()) @db.VarChar(30)
   userId     String       @map("user_id") @db.VarChar(30)
   user       FrontendUser @relation(fields: [userId], references: [id], onDelete: Cascade)
+  familyId   String?      @map("family_id") @db.VarChar(30)
+  label      String?      @db.VarChar(200)
   version    Int
-  action     String       @db.VarChar(20) // CREATED | UPDATED
+  action     String       @db.VarChar(20) // CREATED | UPDATED | DELETED
   beforeData String?      @map("before_data") @db.LongText
   afterData  String       @map("after_data") @db.LongText
   createdAt  DateTime     @default(now()) @map("created_at")
 
   @@index([userId, createdAt])
+  @@index([familyId])
   @@index([createdAt])
   @@map("frontend_obituary_family_audit")
 }
@@ -285,6 +291,8 @@ model Obituary {
   status                  String   @default("PENDING") @db.VarChar(20) // PENDING, APPROVED, REJECTED
   submitterName           String?  @map("submitter_name") @db.VarChar(255)
   submitterEmail          String?  @map("submitter_email") @db.VarChar(255)
+  frontendUserId          String?  @map("frontend_user_id") @db.VarChar(30)
+  submittedBy             FrontendUser? @relation("ObituarySubmissions", fields: [frontendUserId], references: [id], onDelete: SetNull)
   publishedAt             DateTime @default(now()) @map("published_at")
   createdAt               DateTime @default(now()) @map("created_at")
   updatedAt               DateTime @updatedAt @map("updated_at")
@@ -320,6 +328,7 @@ model Obituary {
   @@index([status])
   @@index([dateOfDeath])
   @@index([firstName, surname])
+  @@index([frontendUserId])
   @@map("obituaries")
 }
 

@@ -5,7 +5,7 @@ import Link from 'next/link';
 import { useUserAuth } from '@/contexts/UserAuthContext';
 import AuthModal from '@/components/ui/AuthModal';
 import Breadcrumb from '@/components/ui/Breadcrumb';
-import FamilyMembersInput, { FamilyPerson, serializeFamilyPersons } from '@/components/ui/FamilyMembersInput';
+import FamilyMembersInput, { FamilyPerson, serializeFamilyPersons, parseFamilyPersons } from '@/components/ui/FamilyMembersInput';
 
 const API_URL = (process.env.NEXT_PUBLIC_API_URL || 'http://localhost:4000/api').replace(/\/+$/, '');
 
@@ -25,11 +25,32 @@ const FAMILY_FORM_KEYS = Object.keys(FAMILY_FIELD_MAP) as (keyof FormData)[];
 
 type FamilyData = Record<string, FamilyPerson[]>;
 
-interface SavedFamily {
+interface FamilyEntry {
+  id: string;
+  label: string;
   data: FamilyData;
   version: number;
-  updatedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
 }
+
+interface EditingObituary {
+  id: string;
+  status: string;
+  hasPhoto: boolean;
+}
+
+// Obituary record fields that map 1:1 onto the form (strings)
+const OBITUARY_STRING_FIELDS = [
+  'middleName', 'surname', 'otherNames', 'placeOfBirth', 'lastResidentialAddress',
+  'fatherName', 'motherName', 'maritalStatus', 'fatherInLawName', 'motherInLawName',
+  'occupations', 'hobbiesInterests', 'communityActivities', 'otherDetails',
+] as const;
+
+const FAMILY_PARSE_FIELDS = [
+  'spouseName', 'brothersNames', 'sistersNames',
+  'sonsNames', 'daughtersNames', 'sonsInLawNames', 'daughtersInLawNames', 'grandchildrenNames',
+] as const;
 
 interface FormData {
   photo: File | null;
@@ -106,9 +127,13 @@ export default function SubmitObituaryPage() {
   const [error, setError] = useState('');
   const [success, setSuccess] = useState(false);
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
-  const [savedFamily, setSavedFamily] = useState<SavedFamily | null>(null);
+  const [familyEntries, setFamilyEntries] = useState<FamilyEntry[]>([]);
+  const [selectedFamilyId, setSelectedFamilyId] = useState<string>('');
+  const [familyLabel, setFamilyLabel] = useState('');
   const [familyBusy, setFamilyBusy] = useState(false);
   const [familyMessage, setFamilyMessage] = useState('');
+  const [editingObituary, setEditingObituary] = useState<EditingObituary | null>(null);
+  const [editLoading, setEditLoading] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const dropZoneRef = useRef<HTMLDivElement>(null);
 
@@ -123,25 +148,90 @@ export default function SubmitObituaryPage() {
     [token],
   );
 
-  // Load the user's saved family details (owner-only, fetched with their token)
+  // Load the user's saved family entries + handle ?family=<id> / ?edit=<obituaryId>
   useEffect(() => {
     if (!token) {
-      setSavedFamily(null);
+      setFamilyEntries([]);
       return;
     }
+    const params = new URLSearchParams(window.location.search);
+    const familyParam = params.get('family');
+    const editParam = params.get('edit');
     let cancelled = false;
+
     fetch(`${API_URL}/public-auth/family-details`, { headers: authHeaders() })
       .then((res) => (res.ok ? res.json() : null))
       .then((json) => {
-        if (!cancelled && json?.data) {
-          setSavedFamily({ data: json.data as FamilyData, version: json.version, updatedAt: json.updatedAt });
+        if (cancelled || !json?.entries) return;
+        const entries = json.entries as FamilyEntry[];
+        setFamilyEntries(entries);
+        if (familyParam && entries.some((e) => e.id === familyParam)) {
+          setSelectedFamilyId(familyParam);
+          const sel = entries.find((e) => e.id === familyParam)!;
+          setFamilyLabel(sel.label);
+          applyFamilyData(sel.data);
         }
       })
       .catch(() => {});
+
+    if (editParam) {
+      setEditLoading(true);
+      fetch(`${API_URL}/obituaries/mine/${encodeURIComponent(editParam)}`, { headers: authHeaders() })
+        .then(async (res) => {
+          if (cancelled) return;
+          if (res.status === 401) {
+            logout();
+            return;
+          }
+          if (!res.ok) {
+            setError('இந்த இரங்கலைத் திருத்த அல்லது அணுக முடியவில்லை.');
+            return;
+          }
+          const obit = await res.json();
+          if (cancelled) return;
+          applyObituaryToForm(obit);
+          setEditingObituary({ id: obit.id, status: obit.status, hasPhoto: !!(obit.imageMimeType || obit.imageUrl) });
+          if (obit.imageMimeType || obit.imageUrl) {
+            setImagePreview(`${API_URL}/obituaries/${obit.id}/image`);
+          }
+        })
+        .catch(() => { if (!cancelled) setError('இரங்கலை ஏற்ற முடியவில்லை.'); })
+        .finally(() => { if (!cancelled) setEditLoading(false); });
+    }
+
     return () => {
       cancelled = true;
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token, authHeaders]);
+
+  const applyFamilyData = (data: FamilyData) => {
+    setFormData((prev) => {
+      const next = { ...prev };
+      for (const [formKey, familyKey] of Object.entries(FAMILY_FIELD_MAP)) {
+        const list = data[familyKey];
+        (next as Record<string, unknown>)[formKey] = list ? list.map((p) => ({ ...p })) : [];
+      }
+      return next;
+    });
+  };
+
+  const applyObituaryToForm = (obit: Record<string, unknown>) => {
+    setFormData((prev) => {
+      const next: Record<string, unknown> = { ...prev, photo: null };
+      next.firstName = (obit.firstName as string) || '';
+      for (const f of OBITUARY_STRING_FIELDS) {
+        next[f] = (obit[f] as string | null) ?? '';
+      }
+      next.dateOfBirth = typeof obit.dateOfBirth === 'string' ? obit.dateOfBirth.slice(0, 10) : '';
+      next.dateOfDeath = typeof obit.dateOfDeath === 'string' ? obit.dateOfDeath.slice(0, 10) : '';
+      for (const f of FAMILY_PARSE_FIELDS) {
+        next[f] = parseFamilyPersons((obit[f] as string | null) ?? '');
+      }
+      next.lifeStory = (obit.lifeStory as string | null) || (obit.content as string | null) || '';
+      return next as unknown as FormData;
+    });
+  };
 
   const buildFamilyPayload = (): FamilyData => {
     const data: FamilyData = {};
@@ -152,6 +242,18 @@ export default function SubmitObituaryPage() {
     return data;
   };
 
+  const selectedFamily = familyEntries.find((e) => e.id === selectedFamilyId) ?? null;
+
+  const upsertEntry = (entry: FamilyEntry) => {
+    setFamilyEntries((prev) => {
+      const idx = prev.findIndex((e) => e.id === entry.id);
+      if (idx === -1) return [entry, ...prev];
+      const next = [...prev];
+      next[idx] = entry;
+      return next;
+    });
+  };
+
   const handleSaveFamily = async () => {
     if (!token) return;
     setFamilyBusy(true);
@@ -160,7 +262,11 @@ export default function SubmitObituaryPage() {
       const res = await fetch(`${API_URL}/public-auth/family-details`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json', ...authHeaders() },
-        body: JSON.stringify({ data: buildFamilyPayload() }),
+        body: JSON.stringify({
+          ...(selectedFamilyId ? { id: selectedFamilyId } : {}),
+          label: familyLabel,
+          data: buildFamilyPayload(),
+        }),
       });
       const json = await res.json().catch(() => ({}));
       if (res.status === 401) {
@@ -169,8 +275,11 @@ export default function SubmitObituaryPage() {
         throw new Error('உள்நுழைவு காலாவதியானது. மீண்டும் உள்நுழையவும்.');
       }
       if (!res.ok) throw new Error(json.error?.message || 'Failed to save family details');
-      setSavedFamily({ data: json.data as FamilyData, version: json.version, updatedAt: json.updatedAt });
-      setFamilyMessage(`சேமிக்கப்பட்டது (version ${json.version})`);
+      const entry = json as FamilyEntry;
+      upsertEntry(entry);
+      setSelectedFamilyId(entry.id);
+      setFamilyLabel(entry.label);
+      setFamilyMessage(`சேமிக்கப்பட்டது — ${entry.label || 'குடும்ப விவரங்கள்'} (version ${entry.version})`);
     } catch (err) {
       setFamilyMessage(err instanceof Error ? err.message : 'Failed to save');
     } finally {
@@ -178,17 +287,55 @@ export default function SubmitObituaryPage() {
     }
   };
 
-  const handleLoadFamily = () => {
-    if (!savedFamily) return;
+  const handleDeleteFamily = async () => {
+    if (!token || !selectedFamilyId) return;
+    if (!confirm('இந்தச் சேமித்த குடும்ப விவரங்களை நீக்கவா?')) return;
+    setFamilyBusy(true);
+    setFamilyMessage('');
+    try {
+      const res = await fetch(`${API_URL}/public-auth/family-details/${encodeURIComponent(selectedFamilyId)}`, {
+        method: 'DELETE',
+        headers: authHeaders(),
+      });
+      const json = await res.json().catch(() => ({}));
+      if (res.status === 401) {
+        logout();
+        setAuthModalOpen(true);
+        return;
+      }
+      if (!res.ok) throw new Error(json.error?.message || 'Failed to delete');
+      setFamilyEntries((prev) => prev.filter((e) => e.id !== selectedFamilyId));
+      setSelectedFamilyId('');
+      setFamilyLabel('');
+      setFamilyMessage('சேமிப்பு நீக்கப்பட்டது.');
+    } catch (err) {
+      setFamilyMessage(err instanceof Error ? err.message : 'Failed to delete');
+    } finally {
+      setFamilyBusy(false);
+    }
+  };
+
+  const handleSelectFamily = (id: string) => {
+    setSelectedFamilyId(id);
+    const entry = familyEntries.find((e) => e.id === id);
+    setFamilyLabel(entry?.label ?? '');
+    if (entry) {
+      applyFamilyData(entry.data);
+      setFamilyMessage(`"${entry.label || 'குடும்ப விவரங்கள்'}" ஏற்றப்பட்டது — மாற்றிய பிறகு சேமிக்கவும்.`);
+    }
+  };
+
+  const handleNewFamilyEntry = () => {
+    setSelectedFamilyId('');
+    setFamilyLabel('');
     setFormData((prev) => {
       const next = { ...prev };
-      for (const [formKey, familyKey] of Object.entries(FAMILY_FIELD_MAP)) {
-        const list = savedFamily.data[familyKey];
-        (next as Record<string, unknown>)[formKey] = list ? list.map((p) => ({ ...p })) : [];
+      for (const key of FAMILY_FORM_KEYS) {
+        (next as Record<string, unknown>)[key] = [];
       }
       return next;
     });
-    setFamilyMessage('சேமிக்கப்பட்ட குடும்ப விவரங்கள் ஏற்றப்பட்டன.');
+    setFamilyMessage('புதிய குடும்ப விவரப் பதிவு — நிரப்பி "சேமி" அழுத்தவும்.');
   };
 
   const handleFileChange = (file: File | null) => {
@@ -318,11 +465,15 @@ export default function SubmitObituaryPage() {
       if (formData.otherDetails) fd.append('otherDetails', formData.otherDetails);
       if (formData.lifeStory) fd.append('lifeStory', formData.lifeStory);
 
-      const res = await fetch('/api/obituaries/submit', {
-        method: 'POST',
-        headers: token ? { Authorization: `Bearer ${token}` } : undefined,
-        body: fd,
-      });
+      const isEdit = !!editingObituary;
+      const res = await fetch(
+        isEdit ? `${API_URL}/obituaries/mine/${editingObituary!.id}` : '/api/obituaries/submit',
+        {
+          method: isEdit ? 'PUT' : 'POST',
+          headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+          body: fd,
+        },
+      );
 
       if (res.status === 401) {
         logout();
@@ -360,13 +511,24 @@ export default function SubmitObituaryPage() {
         ]} />
         <div className="mt-6 bg-green-50 rounded-2xl p-8 border border-green-200">
           <div className="text-5xl mb-4">✅</div>
-          <h1 className="text-xl font-bold text-green-800 mb-2">Submission Successful!</h1>
+          <h1 className="text-xl font-bold text-green-800 mb-2">
+            {editingObituary ? 'Obituary Updated!' : 'Submission Successful!'}
+          </h1>
           <p className="text-sm text-green-700 mb-4">
-            Your obituary has been submitted successfully. It will be published after admin approval.
+            {editingObituary
+              ? 'உங்கள் இரங்கல் புதுப்பிக்கப்பட்டது. மாற்றங்கள் நிர்வாக அங்கீகாரத்திற்காக மறு மதிப்பாய்வுக்கு அனுப்பப்படும்.'
+              : 'Your obituary has been submitted successfully. It will be published after admin approval.'}
           </p>
-          <Link href="/" className="inline-block bg-accent-red text-white px-6 py-2 rounded-lg text-sm font-medium hover:bg-accent-red/90">
-            Return to Home
-          </Link>
+          <div className="flex flex-col sm:flex-row gap-3 justify-center">
+            <Link href={editingObituary ? '/profile' : '/'} className="inline-block bg-accent-red text-white px-6 py-2 rounded-lg text-sm font-medium hover:bg-accent-red/90">
+              {editingObituary ? 'சுயவிவரத்திற்குச் செல்' : 'Return to Home'}
+            </Link>
+            {!editingObituary && (
+              <Link href="/submit-obituary" className="inline-block border border-accent-red text-accent-red px-6 py-2 rounded-lg text-sm font-medium hover:bg-accent-red/5">
+                புதிய இரங்கல்
+              </Link>
+            )}
+          </div>
         </div>
       </main>
     );
@@ -426,37 +588,96 @@ export default function SubmitObituaryPage() {
           </p>
         )}
 
+        {editingObituary && (
+          <div className="mb-6 rounded-xl border border-blue-200 bg-blue-50/60 p-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+            <div>
+              <h3 className="text-sm font-bold text-blue-900">இரங்கலைத் திருத்துகிறது (Edit mode)</h3>
+              <p className="text-xs text-blue-800/70 mt-0.5">
+                Status: {editingObituary.status} — click Update below to resubmit; edits go back for admin review.
+              </p>
+            </div>
+            <Link href="/profile" className="text-xs text-blue-700 underline shrink-0">ரத்துசெய் / Cancel edit</Link>
+          </div>
+        )}
+        {editLoading && (
+          <div className="mb-6 rounded-xl border border-foreground/10 bg-foreground/5 p-4 text-sm text-foreground/60">
+            இரங்கல் விவரங்கள் ஏற்றப்படுகின்றன...
+          </div>
+        )}
+
         {token && (
           <div className="mb-6 rounded-xl border border-yellow-200 bg-yellow-50/60 p-4">
             <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
-              <div>
+              <div className="flex-1 min-w-0">
                 <h3 className="text-sm font-bold text-foreground">குடும்ப விவரங்கள் (Family Details)</h3>
                 <p className="text-xs text-foreground/60 mt-0.5">
-                  {savedFamily
-                    ? `சேமிக்கப்பட்டது — version ${savedFamily.version}${savedFamily.updatedAt ? `, ${new Date(savedFamily.updatedAt).toLocaleString()}` : ''}. பயன்படுத்த ஏற்றி திருத்தலாம்.`
-                    : 'குடும்ப உறுப்பினர் விவரங்களை உங்கள் கணக்கில் சேமித்து பின்னர் மீண்டும் பயன்படுத்தலாம்.'}
+                  Save multiple named family-detail entries and reuse them across obituary forms. Only you can see and edit them.
                 </p>
                 {familyMessage && <p className="text-xs text-green-700 mt-1" role="status">{familyMessage}</p>}
               </div>
-              <div className="flex gap-2 shrink-0">
-                {savedFamily && (
+              <div className="flex flex-wrap gap-2 shrink-0">
+                {selectedFamily && (
                   <button
                     type="button"
-                    onClick={handleLoadFamily}
-                    className="px-4 py-2 border border-yellow-400 text-yellow-800 rounded-lg text-xs font-bold hover:bg-yellow-100 transition-colors"
+                    onClick={handleDeleteFamily}
+                    disabled={familyBusy}
+                    className="px-4 py-2 border border-red-300 text-red-600 rounded-lg text-xs font-bold hover:bg-red-50 disabled:opacity-50 transition-colors"
                   >
-                    ஏற்று / Load saved
+                    நீக்கு / Delete
                   </button>
                 )}
+                <button
+                  type="button"
+                  onClick={handleNewFamilyEntry}
+                  className="px-4 py-2 border border-yellow-400 text-yellow-800 rounded-lg text-xs font-bold hover:bg-yellow-100 transition-colors"
+                >
+                  புதியது / New
+                </button>
                 <button
                   type="button"
                   onClick={handleSaveFamily}
                   disabled={familyBusy}
                   className="px-4 py-2 bg-accent-red text-white rounded-lg text-xs font-bold hover:bg-accent-red/90 disabled:opacity-50 transition-colors"
                 >
-                  {familyBusy ? 'சேமிக்கிறது...' : 'சேமி / Save details'}
+                  {familyBusy ? 'சேமிக்கிறது...' : selectedFamilyId ? 'புதுப்பி / Update' : 'சேமி / Save'}
                 </button>
               </div>
+            </div>
+
+            {familyEntries.length > 0 && (
+              <div className="mt-3">
+                <label htmlFor="family-entry-select" className="block text-xs font-medium text-foreground/70 mb-1">
+                  சேமித்த பதிவுகள் (Saved entries)
+                </label>
+                <select
+                  id="family-entry-select"
+                  value={selectedFamilyId}
+                  onChange={(e) => handleSelectFamily(e.target.value)}
+                  className="w-full border border-yellow-300 rounded-lg px-3 py-2 text-sm bg-white focus:ring-2 focus:ring-accent-red/30 focus:border-accent-red"
+                >
+                  <option value="">— புதிய பதிவு / New entry —</option>
+                  {familyEntries.map((e) => (
+                    <option key={e.id} value={e.id}>
+                      {e.label || 'குடும்ப விவரங்கள்'}{e.label ? ' — ' : ''}v{e.version} ({new Date(e.updatedAt).toLocaleDateString()})
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
+
+            <div className="mt-3">
+              <label htmlFor="family-entry-label" className="block text-xs font-medium text-foreground/70 mb-1">
+                பதிவின் பெயர் (optional — e.g. deceased&apos;s name)
+              </label>
+              <input
+                id="family-entry-label"
+                type="text"
+                value={familyLabel}
+                onChange={(e) => setFamilyLabel(e.target.value)}
+                maxLength={200}
+                placeholder="எ.கா. Raman's family"
+                className="w-full border border-yellow-300 rounded-lg px-3 py-2 text-sm bg-white focus:ring-2 focus:ring-accent-red/30 focus:border-accent-red"
+              />
             </div>
           </div>
         )}
@@ -875,7 +1096,7 @@ export default function SubmitObituaryPage() {
               disabled={submitting || authLoading}
               className="flex-1 px-6 py-3 bg-accent-red text-white rounded-lg text-sm font-bold hover:bg-accent-red/90 disabled:opacity-50 transition-colors"
             >
-              {submitting ? 'Submitting...' : 'Submit Obituary Information'}
+              {submitting ? 'Submitting...' : editingObituary ? 'Update & Resubmit Obituary' : 'Submit Obituary Information'}
             </button>
           </div>
         </form>

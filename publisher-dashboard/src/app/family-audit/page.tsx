@@ -15,8 +15,10 @@ type FamilyData = Record<string, FamilyPerson[]>;
 
 interface AuditEntry {
   id: string;
+  familyId: string | null;
+  label: string | null;
   version: number;
-  action: 'CREATED' | 'UPDATED' | string;
+  action: 'CREATED' | 'UPDATED' | 'DELETED' | string;
   createdAt: string;
   beforeData: FamilyData | null;
   afterData: FamilyData;
@@ -142,12 +144,21 @@ export default function FamilyAuditPage() {
                 <div className="flex items-center gap-3 min-w-0">
                   <span
                     className={`px-2 py-0.5 rounded text-xs font-bold ${
-                      entry.action === 'CREATED' ? 'bg-green-100 text-green-800' : 'bg-blue-100 text-blue-800'
+                      entry.action === 'CREATED'
+                        ? 'bg-green-100 text-green-800'
+                        : entry.action === 'DELETED'
+                          ? 'bg-red-100 text-red-800'
+                          : 'bg-blue-100 text-blue-800'
                     }`}
                   >
                     {entry.action}
                   </span>
                   <span className="text-sm font-medium">v{entry.version}</span>
+                  {entry.label && (
+                    <span className="text-xs bg-gray-100 text-gray-700 px-2 py-0.5 rounded truncate max-w-[180px]">
+                      {entry.label}
+                    </span>
+                  )}
                   <span className="text-sm text-gray-700 truncate">
                     {entry.user ? `${entry.user.name} (${entry.user.email})` : 'Unknown user'}
                   </span>

@@ -12,13 +12,19 @@ export function serializeFamilyPersons(list: FamilyPerson[]): string {
   return list.map((p) => `${p.name} (${p.alive ? 'Alive' : 'Deceased'})`).join(', ');
 }
 
-/** Parse a comma/newline separated string into person entries (default: alive). */
+/** Parse a comma/newline separated string into person entries (default: alive).
+ *  Understands the "Name (Alive)" / "Name (Deceased)" suffix produced by
+ *  serializeFamilyPersons so saved submissions round-trip correctly. */
 export function parseFamilyPersons(text: string): FamilyPerson[] {
   return text
     .split(/[,،\n]+/)
     .map((s) => s.trim())
     .filter(Boolean)
-    .map((name) => ({ name, alive: true }));
+    .map((raw) => {
+      const m = raw.match(/^(.*?)\s*\((Alive|Deceased)\)\s*$/i);
+      if (m) return { name: m[1].trim(), alive: m[2].toLowerCase() === 'alive' };
+      return { name: raw, alive: true };
+    });
 }
 
 interface FamilyMembersInputProps {

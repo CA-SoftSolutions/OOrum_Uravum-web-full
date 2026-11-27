@@ -40,6 +40,14 @@ interface Activity {
   obituaries: ActivityObituary[];
 }
 
+interface FamilyEntry {
+  id: string;
+  label: string;
+  version: number;
+  updatedAt: string;
+  data: Record<string, { name: string; alive: boolean }[]>;
+}
+
 const STATUS_LABELS: Record<string, { label: string; className: string }> = {
   PENDING: { label: 'நிலுவையில்', className: 'bg-yellow-100 text-yellow-800' },
   APPROVED: { label: 'அங்கீகரிக்கப்பட்டது', className: 'bg-green-100 text-green-800' },
@@ -72,6 +80,7 @@ export default function ProfilePage() {
 
   const [profile, setProfile] = useState<Profile | null>(null);
   const [activity, setActivity] = useState<Activity | null>(null);
+  const [familyEntries, setFamilyEntries] = useState<FamilyEntry[]>([]);
   const [loadingData, setLoadingData] = useState(true);
   const [error, setError] = useState('');
 
@@ -87,9 +96,10 @@ export default function ProfilePage() {
     setLoadingData(true);
     setError('');
     try {
-      const [meRes, actRes] = await Promise.all([
+      const [meRes, actRes, famRes] = await Promise.all([
         fetch(`${API_URL}/public-auth/me`, { headers: { Authorization: `Bearer ${token}` }, cache: 'no-store' }),
         fetch(`${API_URL}/public-auth/me/activity`, { headers: { Authorization: `Bearer ${token}` }, cache: 'no-store' }),
+        fetch(`${API_URL}/public-auth/family-details`, { headers: { Authorization: `Bearer ${token}` }, cache: 'no-store' }),
       ]);
       if (meRes.status === 401 || actRes.status === 401) {
         logout();
@@ -98,6 +108,10 @@ export default function ProfilePage() {
       if (!meRes.ok || !actRes.ok) throw new Error('load failed');
       setProfile(await meRes.json());
       setActivity(await actRes.json());
+      if (famRes.ok) {
+        const famJson = await famRes.json().catch(() => null);
+        setFamilyEntries(famJson?.entries ?? []);
+      }
     } catch {
       setError('தகவலை ஏற்ற முடியவில்லை. மீண்டும் முயற்சிக்கவும்.');
     } finally {
@@ -350,9 +364,55 @@ export default function ProfilePage() {
                       காண்க
                     </Link>
                   )}
+                  <Link
+                    href={`/submit-obituary?edit=${o.id}`}
+                    className="text-xs text-accent-red font-semibold hover:underline"
+                  >
+                    திருத்து
+                  </Link>
                 </div>
               </div>
             ))}
+          </div>
+        )}
+        <p className="text-xs text-foreground/40 mt-3">
+          திருத்திய பிறகு இரங்கல் நிர்வாக மதிப்பாய்வுக்கு மீண்டும் அனுப்பப்படும் (நிலுவை நிலைக்குத் திரும்பும்).
+        </p>
+      </div>
+
+      {/* Saved family detail entries */}
+      <div className="mt-6 bg-card-bg rounded-2xl shadow-sm p-6 border border-foreground/10 mb-12">
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="text-lg font-bold">சேமித்த குடும்ப விவரங்கள்</h2>
+          <Link href="/submit-obituary" className="text-xs bg-accent-red text-white px-3 py-1.5 rounded font-bold hover:bg-accent-red/90">
+            புதிய பதிவு
+          </Link>
+        </div>
+        {familyEntries.length === 0 ? (
+          <p className="text-sm text-foreground/50">
+            இதுவரை குடும்ப விவரங்கள் சேமிக்கப்படவில்லை. இரங்கல் படிவத்தில் குடும்ப உறுப்பினர்களைச் சேமித்து, இங்கே திருத்தலாம்.
+          </p>
+        ) : (
+          <div className="space-y-3">
+            {familyEntries.map((e) => {
+              const memberCount = Object.values(e.data).reduce((n, list) => n + (list?.length ?? 0), 0);
+              return (
+                <div key={e.id} className="rounded-lg border border-foreground/10 p-4 flex items-center justify-between gap-3">
+                  <div>
+                    <p className="text-sm font-semibold">{e.label || 'குடும்ப விவரங்கள்'}</p>
+                    <p className="text-xs text-foreground/40">
+                      v{e.version} · {memberCount} உறுப்பினர்கள் · {formatDate(e.updatedAt)}
+                    </p>
+                  </div>
+                  <Link
+                    href={`/submit-obituary?family=${e.id}`}
+                    className="text-xs text-accent-red font-semibold hover:underline shrink-0"
+                  >
+                    திருத்து / Use
+                  </Link>
+                </div>
+              );
+            })}
           </div>
         )}
       </div>

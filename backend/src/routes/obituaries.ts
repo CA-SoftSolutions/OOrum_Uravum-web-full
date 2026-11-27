@@ -231,6 +231,180 @@ router.get('/', authenticateIfProvided, async (req: AuthenticatedRequest, res: R
 
 // â”€â”€â”€ GET /slug/:slug â€” Get obituary by slug â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
+// ─── Owner endpoints: /mine — frontend users manage their own submissions ────
+
+const ownerObituarySelect = {
+  id: true, name: true, slug: true, content: true, sourceUrl: true,
+  status: true, submitterName: true, submitterEmail: true,
+  imageUrl: true, imageMimeType: true, publishedAt: true, createdAt: true, updatedAt: true,
+  firstName: true, middleName: true, surname: true, otherNames: true,
+  dateOfBirth: true, dateOfDeath: true, placeOfBirth: true,
+  lastResidentialAddress: true, fatherName: true, motherName: true,
+  maritalStatus: true, spouseName: true, brothersNames: true,
+  sistersNames: true, fatherInLawName: true, motherInLawName: true,
+  sonsNames: true, daughtersNames: true, sonsInLawNames: true,
+  daughtersInLawNames: true, grandchildrenNames: true, occupations: true,
+  hobbiesInterests: true, communityActivities: true, otherDetails: true,
+  lifeStory: true,
+} as const;
+
+// Ownership: claimed rows match on frontendUserId; legacy rows (pre-migration)
+// match on submitterEmail until the owner next edits them.
+function isObituaryOwner(
+  obit: { frontendUserId: string | null; submitterEmail: string | null },
+  user: { id: string; email: string },
+): boolean {
+  if (obit.frontendUserId) return obit.frontendUserId === user.id;
+  return obit.submitterEmail === user.email;
+}
+
+const ownerEditLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  limit: 30,
+  standardHeaders: 'draft-7',
+  legacyHeaders: false,
+  handler: (_req: Request, res: Response) => {
+    res.status(429).json({
+      error: { code: 'RATE_LIMIT_EXCEEDED', message: 'Too many edits. Please try again later.' },
+    });
+  },
+});
+
+// GET /mine — list obituaries submitted by the logged-in frontend user
+router.get('/mine', requireFrontendUser, async (req: FrontendAuthenticatedRequest, res: Response) => {
+  try {
+    const user = req.frontendUser!;
+    const data = await prisma.obituary.findMany({
+      where: {
+        OR: [
+          { frontendUserId: user.id },
+          { frontendUserId: null, submitterEmail: user.email },
+        ],
+      },
+      orderBy: { createdAt: 'desc' },
+      take: 100,
+      select: ownerObituarySelect,
+    });
+    res.json({ data });
+  } catch (err) {
+    console.error('[obituaries] GET /mine error:', err);
+    res.status(500).json({ error: { code: 'INTERNAL_ERROR', message: 'Failed to load your obituaries' } });
+  }
+});
+
+// GET /mine/:id — full record for editing (owner only; 404 for others)
+router.get('/mine/:id', requireFrontendUser, async (req: FrontendAuthenticatedRequest, res: Response) => {
+  try {
+    const user = req.frontendUser!;
+    const obit = await prisma.obituary.findUnique({
+      where: { id: req.params.id as string },
+      select: { ...ownerObituarySelect, frontendUserId: true, submitterEmail: true },
+    });
+    if (!obit || !isObituaryOwner(obit, user)) {
+      res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Obituary not found' } });
+      return;
+    }
+    res.json(obit);
+  } catch (err) {
+    console.error('[obituaries] GET /mine/:id error:', err);
+    res.status(500).json({ error: { code: 'INTERNAL_ERROR', message: 'Failed to load obituary' } });
+  }
+});
+
+// PUT /mine/:id — owner edit; any edit returns the obituary to PENDING for re-review
+router.put(
+  '/mine/:id',
+  requireFrontendUser,
+  ownerEditLimiter,
+  (req: FrontendAuthenticatedRequest, res: Response, next) => {
+    upload.single('photo')(req, res, (err) => {
+      if (err) {
+        if (err instanceof multer.MulterError && err.code === 'LIMIT_FILE_SIZE') {
+          res.status(400).json({ error: { code: 'FILE_TOO_LARGE', message: 'File exceeds 5MB' } });
+          return;
+        }
+        res.status(400).json({ error: { code: 'UPLOAD_ERROR', message: err.message } });
+        return;
+      }
+      next();
+    });
+  },
+  async (req: FrontendAuthenticatedRequest, res: Response) => {
+    const parsed = publicSubmitSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({
+        error: { code: 'VALIDATION_ERROR', message: 'Invalid data', details: parsed.error.flatten().fieldErrors as Record<string, string[]> },
+      });
+      return;
+    }
+
+    try {
+      const user = req.frontendUser!;
+      const existing = await prisma.obituary.findUnique({
+        where: { id: req.params.id as string },
+        select: { id: true, frontendUserId: true, submitterEmail: true, status: true, slug: true },
+      });
+      if (!existing || !isObituaryOwner(existing, user)) {
+        res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Obituary not found' } });
+        return;
+      }
+
+      const data = parsed.data;
+      const displayName = [data.firstName, data.middleName, data.surname]
+        .filter(Boolean)
+        .join(' ')
+        .trim() || data.name || data.firstName;
+
+      const obituary = await prisma.obituary.update({
+        where: { id: existing.id },
+        data: {
+          name: displayName,
+          content: data.lifeStory || data.content || '',
+          // Owner edits always go back through admin review
+          status: 'PENDING',
+          frontendUserId: user.id,
+          imageMimeType: req.file ? getImageMimeType(req.file) : undefined,
+          firstName: data.firstName,
+          middleName: data.middleName,
+          surname: data.surname,
+          otherNames: data.otherNames,
+          dateOfBirth: data.dateOfBirth ? new Date(data.dateOfBirth) : null,
+          dateOfDeath: data.dateOfDeath ? new Date(data.dateOfDeath) : null,
+          placeOfBirth: data.placeOfBirth,
+          lastResidentialAddress: data.lastResidentialAddress,
+          fatherName: data.fatherName,
+          motherName: data.motherName,
+          maritalStatus: data.maritalStatus,
+          spouseName: data.spouseName,
+          brothersNames: data.brothersNames,
+          sistersNames: data.sistersNames,
+          fatherInLawName: data.fatherInLawName,
+          motherInLawName: data.motherInLawName,
+          sonsNames: data.sonsNames,
+          daughtersNames: data.daughtersNames,
+          sonsInLawNames: data.sonsInLawNames,
+          daughtersInLawNames: data.daughtersInLawNames,
+          grandchildrenNames: data.grandchildrenNames,
+          occupations: data.occupations,
+          hobbiesInterests: data.hobbiesInterests,
+          communityActivities: data.communityActivities,
+          otherDetails: data.otherDetails,
+          lifeStory: data.lifeStory,
+          ...(req.file && { imageData: encryptImage(req.file.buffer) as unknown as Uint8Array<ArrayBuffer> }),
+        },
+        select: ownerObituarySelect,
+      });
+
+      await invalidateByTags(['obituaries', 'search', `obituary:${existing.id}`]);
+      revalidateFrontend();
+      res.json(obituary);
+    } catch (err) {
+      console.error('[obituaries] PUT /mine/:id error:', err);
+      res.status(500).json({ error: { code: 'INTERNAL_ERROR', message: 'Failed to update obituary' } });
+    }
+  },
+);
+
 router.get('/slug/:slug', async (req: Request, res: Response) => {
   try {
     const obit = await prisma.obituary.findUnique({
@@ -334,6 +508,7 @@ router.post(
           status: 'PENDING',
           submitterName,
           submitterEmail,
+          frontendUserId: req.frontendUser!.id,
           publishedAt: new Date(),
           imageMimeType: getImageMimeType(req.file),
           // New detailed fields
