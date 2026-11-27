@@ -1,10 +1,35 @@
 'use client';
 
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useCallback } from 'react';
 import Link from 'next/link';
 import { useUserAuth } from '@/contexts/UserAuthContext';
 import AuthModal from '@/components/ui/AuthModal';
 import Breadcrumb from '@/components/ui/Breadcrumb';
+import FamilyMembersInput, { FamilyPerson, serializeFamilyPersons } from '@/components/ui/FamilyMembersInput';
+
+const API_URL = (process.env.NEXT_PUBLIC_API_URL || 'http://localhost:4000/api').replace(/\/+$/, '');
+
+// Form field -> saved family-details key
+const FAMILY_FIELD_MAP: Record<string, string> = {
+  spouseName: 'spouse',
+  sonsInLawNames: 'sonsInLaw',
+  daughtersInLawNames: 'daughtersInLaw',
+  brothersNames: 'brothers',
+  sistersNames: 'sisters',
+  sonsNames: 'sons',
+  daughtersNames: 'daughters',
+  grandchildrenNames: 'grandchildren',
+};
+
+const FAMILY_FORM_KEYS = Object.keys(FAMILY_FIELD_MAP) as (keyof FormData)[];
+
+type FamilyData = Record<string, FamilyPerson[]>;
+
+interface SavedFamily {
+  data: FamilyData;
+  version: number;
+  updatedAt: string | null;
+}
 
 interface FormData {
   photo: File | null;
@@ -19,16 +44,16 @@ interface FormData {
   fatherName: string;
   motherName: string;
   maritalStatus: string;
-  spouseName: string;
-  brothersNames: string;
-  sistersNames: string;
+  spouseName: FamilyPerson[];
+  brothersNames: FamilyPerson[];
+  sistersNames: FamilyPerson[];
   fatherInLawName: string;
   motherInLawName: string;
-  sonsNames: string;
-  daughtersNames: string;
-  sonsInLawNames: string;
-  daughtersInLawNames: string;
-  grandchildrenNames: string;
+  sonsNames: FamilyPerson[];
+  daughtersNames: FamilyPerson[];
+  sonsInLawNames: FamilyPerson[];
+  daughtersInLawNames: FamilyPerson[];
+  grandchildrenNames: FamilyPerson[];
   occupations: string;
   hobbiesInterests: string;
   communityActivities: string;
@@ -49,22 +74,24 @@ const initialFormData: FormData = {
   fatherName: '',
   motherName: '',
   maritalStatus: '',
-  spouseName: '',
-  brothersNames: '',
-  sistersNames: '',
+  spouseName: [],
+  brothersNames: [],
+  sistersNames: [],
   fatherInLawName: '',
   motherInLawName: '',
-  sonsNames: '',
-  daughtersNames: '',
-  sonsInLawNames: '',
-  daughtersInLawNames: '',
-  grandchildrenNames: '',
+  sonsNames: [],
+  daughtersNames: [],
+  sonsInLawNames: [],
+  daughtersInLawNames: [],
+  grandchildrenNames: [],
   occupations: '',
   hobbiesInterests: '',
   communityActivities: '',
   otherDetails: '',
   lifeStory: '',
 };
+
+export const dynamic = 'force-dynamic';
 
 export default function SubmitObituaryPage() {
   const { user, token, loading: authLoading, logout } = useUserAuth();
@@ -79,6 +106,9 @@ export default function SubmitObituaryPage() {
   const [error, setError] = useState('');
   const [success, setSuccess] = useState(false);
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
+  const [savedFamily, setSavedFamily] = useState<SavedFamily | null>(null);
+  const [familyBusy, setFamilyBusy] = useState(false);
+  const [familyMessage, setFamilyMessage] = useState('');
   const fileInputRef = useRef<HTMLInputElement>(null);
   const dropZoneRef = useRef<HTMLDivElement>(null);
 
@@ -87,6 +117,79 @@ export default function SubmitObituaryPage() {
       if (imagePreview) URL.revokeObjectURL(imagePreview);
     };
   }, [imagePreview]);
+
+  const authHeaders = useCallback(
+    () => (token ? { Authorization: `Bearer ${token}` } : undefined),
+    [token],
+  );
+
+  // Load the user's saved family details (owner-only, fetched with their token)
+  useEffect(() => {
+    if (!token) {
+      setSavedFamily(null);
+      return;
+    }
+    let cancelled = false;
+    fetch(`${API_URL}/public-auth/family-details`, { headers: authHeaders() })
+      .then((res) => (res.ok ? res.json() : null))
+      .then((json) => {
+        if (!cancelled && json?.data) {
+          setSavedFamily({ data: json.data as FamilyData, version: json.version, updatedAt: json.updatedAt });
+        }
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [token, authHeaders]);
+
+  const buildFamilyPayload = (): FamilyData => {
+    const data: FamilyData = {};
+    for (const key of FAMILY_FORM_KEYS) {
+      const list = formData[key] as FamilyPerson[];
+      if (list.length) data[FAMILY_FIELD_MAP[key]] = list;
+    }
+    return data;
+  };
+
+  const handleSaveFamily = async () => {
+    if (!token) return;
+    setFamilyBusy(true);
+    setFamilyMessage('');
+    try {
+      const res = await fetch(`${API_URL}/public-auth/family-details`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', ...authHeaders() },
+        body: JSON.stringify({ data: buildFamilyPayload() }),
+      });
+      const json = await res.json().catch(() => ({}));
+      if (res.status === 401) {
+        logout();
+        setAuthModalOpen(true);
+        throw new Error('உள்நுழைவு காலாவதியானது. மீண்டும் உள்நுழையவும்.');
+      }
+      if (!res.ok) throw new Error(json.error?.message || 'Failed to save family details');
+      setSavedFamily({ data: json.data as FamilyData, version: json.version, updatedAt: json.updatedAt });
+      setFamilyMessage(`சேமிக்கப்பட்டது (version ${json.version})`);
+    } catch (err) {
+      setFamilyMessage(err instanceof Error ? err.message : 'Failed to save');
+    } finally {
+      setFamilyBusy(false);
+    }
+  };
+
+  const handleLoadFamily = () => {
+    if (!savedFamily) return;
+    setFormData((prev) => {
+      const next = { ...prev };
+      for (const [formKey, familyKey] of Object.entries(FAMILY_FIELD_MAP)) {
+        const list = savedFamily.data[familyKey];
+        (next as Record<string, unknown>)[formKey] = list ? list.map((p) => ({ ...p })) : [];
+      }
+      return next;
+    });
+    setFamilyMessage('சேமிக்கப்பட்ட குடும்ப விவரங்கள் ஏற்றப்பட்டன.');
+  };
 
   const handleFileChange = (file: File | null) => {
     if (!file) {
@@ -128,6 +231,10 @@ export default function SubmitObituaryPage() {
     }
   };
 
+  const handleFamilyChange = (field: keyof FormData, value: FamilyPerson[]) => {
+    setFormData(prev => ({ ...prev, [field]: value }));
+  };
+
   const handleDateOfDeathChange = (value: string) => {
     handleInputChange('dateOfDeath', value);
     if (value && value > latestDateOfDeath) {
@@ -155,8 +262,8 @@ export default function SubmitObituaryPage() {
   };
 
   const handleClear = () => {
-    const hasData = Object.values(formData).some(val => 
-      typeof val === 'string' ? val.trim() !== '' : val !== null
+    const hasData = Object.values(formData).some(val =>
+      Array.isArray(val) ? val.length > 0 : typeof val === 'string' ? val.trim() !== '' : val !== null
     );
 
     if (hasData && !confirm('Are you sure you want to clear the form? All data will be lost.')) {
@@ -195,16 +302,16 @@ export default function SubmitObituaryPage() {
       if (formData.fatherName) fd.append('fatherName', formData.fatherName);
       if (formData.motherName) fd.append('motherName', formData.motherName);
       if (formData.maritalStatus) fd.append('maritalStatus', formData.maritalStatus);
-      if (formData.spouseName) fd.append('spouseName', formData.spouseName);
-      if (formData.brothersNames) fd.append('brothersNames', formData.brothersNames);
-      if (formData.sistersNames) fd.append('sistersNames', formData.sistersNames);
+      if (formData.spouseName.length) fd.append('spouseName', serializeFamilyPersons(formData.spouseName));
+      if (formData.brothersNames.length) fd.append('brothersNames', serializeFamilyPersons(formData.brothersNames));
+      if (formData.sistersNames.length) fd.append('sistersNames', serializeFamilyPersons(formData.sistersNames));
       if (formData.fatherInLawName) fd.append('fatherInLawName', formData.fatherInLawName);
       if (formData.motherInLawName) fd.append('motherInLawName', formData.motherInLawName);
-      if (formData.sonsNames) fd.append('sonsNames', formData.sonsNames);
-      if (formData.daughtersNames) fd.append('daughtersNames', formData.daughtersNames);
-      if (formData.sonsInLawNames) fd.append('sonsInLawNames', formData.sonsInLawNames);
-      if (formData.daughtersInLawNames) fd.append('daughtersInLawNames', formData.daughtersInLawNames);
-      if (formData.grandchildrenNames) fd.append('grandchildrenNames', formData.grandchildrenNames);
+      if (formData.sonsNames.length) fd.append('sonsNames', serializeFamilyPersons(formData.sonsNames));
+      if (formData.daughtersNames.length) fd.append('daughtersNames', serializeFamilyPersons(formData.daughtersNames));
+      if (formData.sonsInLawNames.length) fd.append('sonsInLawNames', serializeFamilyPersons(formData.sonsInLawNames));
+      if (formData.daughtersInLawNames.length) fd.append('daughtersInLawNames', serializeFamilyPersons(formData.daughtersInLawNames));
+      if (formData.grandchildrenNames.length) fd.append('grandchildrenNames', serializeFamilyPersons(formData.grandchildrenNames));
       if (formData.occupations) fd.append('occupations', formData.occupations);
       if (formData.hobbiesInterests) fd.append('hobbiesInterests', formData.hobbiesInterests);
       if (formData.communityActivities) fd.append('communityActivities', formData.communityActivities);
@@ -317,6 +424,41 @@ export default function SubmitObituaryPage() {
           <p className="mb-4 text-sm text-foreground/60" role="status">
             {user.name} ({user.email}) கணக்கில் சமர்ப்பிக்கப்படுகிறது.
           </p>
+        )}
+
+        {token && (
+          <div className="mb-6 rounded-xl border border-yellow-200 bg-yellow-50/60 p-4">
+            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+              <div>
+                <h3 className="text-sm font-bold text-foreground">குடும்ப விவரங்கள் (Family Details)</h3>
+                <p className="text-xs text-foreground/60 mt-0.5">
+                  {savedFamily
+                    ? `சேமிக்கப்பட்டது — version ${savedFamily.version}${savedFamily.updatedAt ? `, ${new Date(savedFamily.updatedAt).toLocaleString()}` : ''}. பயன்படுத்த ஏற்றி திருத்தலாம்.`
+                    : 'குடும்ப உறுப்பினர் விவரங்களை உங்கள் கணக்கில் சேமித்து பின்னர் மீண்டும் பயன்படுத்தலாம்.'}
+                </p>
+                {familyMessage && <p className="text-xs text-green-700 mt-1" role="status">{familyMessage}</p>}
+              </div>
+              <div className="flex gap-2 shrink-0">
+                {savedFamily && (
+                  <button
+                    type="button"
+                    onClick={handleLoadFamily}
+                    className="px-4 py-2 border border-yellow-400 text-yellow-800 rounded-lg text-xs font-bold hover:bg-yellow-100 transition-colors"
+                  >
+                    ஏற்று / Load saved
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={handleSaveFamily}
+                  disabled={familyBusy}
+                  className="px-4 py-2 bg-accent-red text-white rounded-lg text-xs font-bold hover:bg-accent-red/90 disabled:opacity-50 transition-colors"
+                >
+                  {familyBusy ? 'சேமிக்கிறது...' : 'சேமி / Save details'}
+                </button>
+              </div>
+            </div>
+          </div>
         )}
 
         <form onSubmit={handleSubmit} className="space-y-8">
@@ -552,36 +694,30 @@ export default function SubmitObituaryPage() {
                 </select>
               </div>
               <div>
-                <label htmlFor="spouseName" className="block text-sm font-medium mb-1">Wife&apos;s Name / Husband&apos;s Name</label>
-                <input
+                <FamilyMembersInput
                   id="spouseName"
-                  type="text"
+                  label="Wife's Name / Husband's Name"
                   value={formData.spouseName}
-                  onChange={(e) => handleInputChange('spouseName', e.target.value)}
-                  placeholder="Spouse&apos;s name"
-                  className="w-full border rounded-lg px-3 py-2.5 text-sm focus:ring-2 focus:ring-accent-red/30 focus:border-accent-red"
+                  onChange={(v) => handleFamilyChange('spouseName', v)}
+                  placeholder="Spouse's name"
                 />
               </div>
               <div className="md:col-span-2">
-                <label htmlFor="brothersNames" className="block text-sm font-medium mb-1">Brother(s) Names</label>
-                <textarea
+                <FamilyMembersInput
                   id="brothersNames"
+                  label="Brother(s) Names"
                   value={formData.brothersNames}
-                  onChange={(e) => handleInputChange('brothersNames', e.target.value)}
-                  rows={2}
+                  onChange={(v) => handleFamilyChange('brothersNames', v)}
                   placeholder="Brothers' names"
-                  className="w-full border rounded-lg px-3 py-2.5 text-sm focus:ring-2 focus:ring-accent-red/30 focus:border-accent-red resize-y"
                 />
               </div>
               <div className="md:col-span-2">
-                <label htmlFor="sistersNames" className="block text-sm font-medium mb-1">Sister(s) Names</label>
-                <textarea
+                <FamilyMembersInput
                   id="sistersNames"
+                  label="Sister(s) Names"
                   value={formData.sistersNames}
-                  onChange={(e) => handleInputChange('sistersNames', e.target.value)}
-                  rows={2}
+                  onChange={(v) => handleFamilyChange('sistersNames', v)}
                   placeholder="Sisters' names"
-                  className="w-full border rounded-lg px-3 py-2.5 text-sm focus:ring-2 focus:ring-accent-red/30 focus:border-accent-red resize-y"
                 />
               </div>
               <div>
@@ -615,61 +751,41 @@ export default function SubmitObituaryPage() {
               Children
             </h2>
             <div className="space-y-4">
-              <div>
-                <label htmlFor="sonsNames" className="block text-sm font-medium mb-1">Son(s) Names</label>
-                <textarea
-                  id="sonsNames"
-                  value={formData.sonsNames}
-                  onChange={(e) => handleInputChange('sonsNames', e.target.value)}
-                  rows={2}
-                  placeholder="Sons' names"
-                  className="w-full border rounded-lg px-3 py-2.5 text-sm focus:ring-2 focus:ring-accent-red/30 focus:border-accent-red resize-y"
-                />
-              </div>
-              <div>
-                <label htmlFor="daughtersNames" className="block text-sm font-medium mb-1">Daughter(s) Names</label>
-                <textarea
-                  id="daughtersNames"
-                  value={formData.daughtersNames}
-                  onChange={(e) => handleInputChange('daughtersNames', e.target.value)}
-                  rows={2}
-                  placeholder="Daughters' names"
-                  className="w-full border rounded-lg px-3 py-2.5 text-sm focus:ring-2 focus:ring-accent-red/30 focus:border-accent-red resize-y"
-                />
-              </div>
-              <div>
-                <label htmlFor="sonsInLawNames" className="block text-sm font-medium mb-1">Son(s)-in-Law / Son&apos;s Wife Name(s)</label>
-                <textarea
-                  id="sonsInLawNames"
-                  value={formData.sonsInLawNames}
-                  onChange={(e) => handleInputChange('sonsInLawNames', e.target.value)}
-                  rows={2}
-                  placeholder="Sons-in-law names"
-                  className="w-full border rounded-lg px-3 py-2.5 text-sm focus:ring-2 focus:ring-accent-red/30 focus:border-accent-red resize-y"
-                />
-              </div>
-              <div>
-                <label htmlFor="daughtersInLawNames" className="block text-sm font-medium mb-1">Daughter(s)-in-Law / Daughter&apos;s Husband Name(s)</label>
-                <textarea
-                  id="daughtersInLawNames"
-                  value={formData.daughtersInLawNames}
-                  onChange={(e) => handleInputChange('daughtersInLawNames', e.target.value)}
-                  rows={2}
-                  placeholder="Daughters-in-law names"
-                  className="w-full border rounded-lg px-3 py-2.5 text-sm focus:ring-2 focus:ring-accent-red/30 focus:border-accent-red resize-y"
-                />
-              </div>
-              <div>
-                <label htmlFor="grandchildrenNames" className="block text-sm font-medium mb-1">Grandchildren&apos;s Names</label>
-                <textarea
-                  id="grandchildrenNames"
-                  value={formData.grandchildrenNames}
-                  onChange={(e) => handleInputChange('grandchildrenNames', e.target.value)}
-                  rows={2}
-                  placeholder="Grandchildren&apos;s names"
-                  className="w-full border rounded-lg px-3 py-2.5 text-sm focus:ring-2 focus:ring-accent-red/30 focus:border-accent-red resize-y"
-                />
-              </div>
+              <FamilyMembersInput
+                id="sonsNames"
+                label="Son(s) Names"
+                value={formData.sonsNames}
+                onChange={(v) => handleFamilyChange('sonsNames', v)}
+                placeholder="Sons' names"
+              />
+              <FamilyMembersInput
+                id="daughtersNames"
+                label="Daughter(s) Names"
+                value={formData.daughtersNames}
+                onChange={(v) => handleFamilyChange('daughtersNames', v)}
+                placeholder="Daughters' names"
+              />
+              <FamilyMembersInput
+                id="sonsInLawNames"
+                label="Son(s)-in-Law / Son's Wife Name(s)"
+                value={formData.sonsInLawNames}
+                onChange={(v) => handleFamilyChange('sonsInLawNames', v)}
+                placeholder="Sons-in-law names"
+              />
+              <FamilyMembersInput
+                id="daughtersInLawNames"
+                label="Daughter(s)-in-Law / Daughter's Husband Name(s)"
+                value={formData.daughtersInLawNames}
+                onChange={(v) => handleFamilyChange('daughtersInLawNames', v)}
+                placeholder="Daughters-in-law names"
+              />
+              <FamilyMembersInput
+                id="grandchildrenNames"
+                label="Grandchildren's Names"
+                value={formData.grandchildrenNames}
+                onChange={(v) => handleFamilyChange('grandchildrenNames', v)}
+                placeholder="Grandchildren's names"
+              />
             </div>
           </div>
 

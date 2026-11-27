@@ -617,4 +617,186 @@ router.delete('/admin/:id', requireAuth, requireRole('ADMIN'), async (req: Authe
   }
 });
 
+// ─── Obituary family details — owner-only saved entry, versioned + audited ────
+
+export const OBITUARY_FAMILY_FIELDS = [
+  'spouse', 'sonsInLaw', 'daughtersInLaw',
+  'brothers', 'sisters', 'sons', 'daughters', 'grandchildren',
+] as const;
+
+const familyPersonSchema = z.object({
+  name: z.string().min(1).max(200).transform((v) => sanitizeText(v.trim())),
+  alive: z.boolean(),
+});
+
+const familyDataSchema = z.object(
+  Object.fromEntries(OBITUARY_FAMILY_FIELDS.map((f) => [f, z.array(familyPersonSchema).max(100).optional()])),
+).strict();
+
+const FAMILY_DATA_MAX_BYTES = 100 * 1024;
+
+function parseFamilyData(raw: string | null | undefined): Record<string, { name: string; alive: boolean }[]> {
+  if (!raw) return {};
+  try {
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+// GET /family-details — current user's saved family details (own record only)
+router.get('/family-details', async (req: Request, res: Response) => {
+  const user = await resolveFrontendUser(req);
+  if (!user) {
+    res.status(401).json({ error: { code: 'UNAUTHORIZED', message: 'Login is required' } });
+    return;
+  }
+  try {
+    const record = await prisma.frontendObituaryFamily.findUnique({ where: { userId: user.id } });
+    if (!record) {
+      res.json({ data: null, version: 0, updatedAt: null });
+      return;
+    }
+    res.json({ data: parseFamilyData(record.data), version: record.version, updatedAt: record.updatedAt });
+  } catch (err) {
+    console.error('[frontendAuth] GET /family-details error:', err);
+    res.status(500).json({ error: { code: 'INTERNAL_ERROR', message: 'Failed to load family details' } });
+  }
+});
+
+// PUT /family-details — create or update own family details; every save is audited
+router.put('/family-details', async (req: Request, res: Response) => {
+  const user = await resolveFrontendUser(req);
+  if (!user) {
+    res.status(401).json({ error: { code: 'UNAUTHORIZED', message: 'Login is required' } });
+    return;
+  }
+
+  const parsed = familyDataSchema.safeParse(req.body?.data ?? req.body);
+  if (!parsed.success) {
+    res.status(400).json({
+      error: { code: 'VALIDATION_ERROR', message: 'Invalid data', details: parsed.error.flatten().fieldErrors },
+    });
+    return;
+  }
+
+  // Normalise: drop empty names, de-dupe per field, cap serialized size
+  const data: Record<string, { name: string; alive: boolean }[]> = {};
+  for (const field of OBITUARY_FAMILY_FIELDS) {
+    const list = parsed.data[field];
+    if (!list) continue;
+    const seen = new Set<string>();
+    const cleaned = list
+      .map((p) => ({ name: p.name.trim(), alive: p.alive }))
+      .filter((p) => p.name.length > 0 && !seen.has(p.name.toLowerCase()) && seen.add(p.name.toLowerCase()));
+    if (cleaned.length) data[field] = cleaned;
+  }
+
+  const serialized = JSON.stringify(data);
+  if (serialized.length > FAMILY_DATA_MAX_BYTES) {
+    res.status(413).json({ error: { code: 'PAYLOAD_TOO_LARGE', message: 'Family details are too large' } });
+    return;
+  }
+
+  try {
+    const result = await prisma.$transaction(async (tx) => {
+      const existing = await tx.frontendObituaryFamily.findUnique({ where: { userId: user.id } });
+      const version = (existing?.version ?? 0) + 1;
+
+      const record = existing
+        ? await tx.frontendObituaryFamily.update({
+            where: { id: existing.id },
+            data: { data: serialized, version },
+          })
+        : await tx.frontendObituaryFamily.create({
+            data: { userId: user.id, data: serialized, version },
+          });
+
+      await tx.frontendObituaryFamilyAudit.create({
+        data: {
+          userId: user.id,
+          version,
+          action: existing ? 'UPDATED' : 'CREATED',
+          beforeData: existing?.data ?? null,
+          afterData: serialized,
+        },
+      });
+
+      return record;
+    });
+
+    res.json({ data: parseFamilyData(result.data), version: result.version, updatedAt: result.updatedAt });
+  } catch (err) {
+    console.error('[frontendAuth] PUT /family-details error:', err);
+    res.status(500).json({ error: { code: 'INTERNAL_ERROR', message: 'Failed to save family details' } });
+  }
+});
+
+// ─── Admin: family details audit trail ───────────────────────────────────────
+
+// GET /admin/family-audit — paginated audit entries with user info (CMS admin)
+router.get('/admin/family-audit', requireAuth, requireRole('ADMIN'), async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const page = Math.max(1, parseInt(req.query.page as string) || 1);
+    const pageSize = Math.min(50, Math.max(1, parseInt(req.query.pageSize as string) || 20));
+    const userId = (req.query.userId as string || '').trim();
+    const offset = (page - 1) * pageSize;
+
+    const where = userId ? { userId } : {};
+    const [rows, total] = await Promise.all([
+      prisma.frontendObituaryFamilyAudit.findMany({
+        where,
+        orderBy: { createdAt: 'desc' },
+        skip: offset,
+        take: pageSize,
+        include: { user: { select: { id: true, name: true, email: true } } },
+      }),
+      prisma.frontendObituaryFamilyAudit.count({ where }),
+    ]);
+
+    res.json({
+      data: rows.map((r) => ({
+        id: r.id,
+        version: r.version,
+        action: r.action,
+        createdAt: r.createdAt,
+        beforeData: parseFamilyData(r.beforeData),
+        afterData: parseFamilyData(r.afterData),
+        user: r.user ? { id: r.user.id, name: r.user.name, email: r.user.email } : null,
+      })),
+      total,
+      page,
+      pageSize,
+      totalPages: Math.ceil(total / pageSize),
+    });
+  } catch (err) {
+    console.error('[frontendAuth] admin/family-audit error:', err);
+    res.status(500).json({ error: { code: 'INTERNAL_ERROR', message: 'Failed to load audit trail' } });
+  }
+});
+
+// GET /admin/family-details — list users who have saved family details (CMS admin)
+router.get('/admin/family-details', requireAuth, requireRole('ADMIN'), async (_req: AuthenticatedRequest, res: Response) => {
+  try {
+    const rows = await prisma.frontendObituaryFamily.findMany({
+      orderBy: { updatedAt: 'desc' },
+      take: 200,
+      include: { user: { select: { id: true, name: true, email: true } } },
+    });
+    res.json({
+      data: rows.map((r) => ({
+        userId: r.userId,
+        version: r.version,
+        updatedAt: r.updatedAt,
+        data: parseFamilyData(r.data),
+        user: r.user ? { id: r.user.id, name: r.user.name, email: r.user.email } : null,
+      })),
+    });
+  } catch (err) {
+    console.error('[frontendAuth] admin/family-details error:', err);
+    res.status(500).json({ error: { code: 'INTERNAL_ERROR', message: 'Failed to list family details' } });
+  }
+});
+
 export default router;

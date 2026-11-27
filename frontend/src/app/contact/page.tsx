@@ -1,6 +1,8 @@
 import type { Metadata } from 'next';
 import Breadcrumb from '@/components/ui/Breadcrumb';
 
+export const dynamic = 'force-dynamic';
+
 export const metadata: Metadata = {
   title: 'தொடர்பு கொள்ள | ஊரும் உறவும்',
   description: 'ஊரும் உறவும் செய்தி தளத்தை தொடர்பு கொள்ளுங்கள்',

@@ -8,6 +8,7 @@ export const ALL_PAGES = [
   { id: 'media', label: 'Media', icon: '🖼️', href: '/media' },
   { id: 'comments', label: 'Comments', icon: '💬', href: '/comments' },
   { id: 'obituaries', label: 'Obituaries', icon: '🕯️', href: '/obituaries' },
+  { id: 'familyAudit', label: 'Family Audit', icon: '🕵️', href: '/family-audit' },
   { id: 'videos', label: 'Videos', icon: '🎬', href: '/videos' },
   { id: 'advertisements', label: 'Advertisements', icon: '📢', href: '/advertisements' },
   { id: 'homeLayout', label: 'Home Layout', icon: '🏠', href: '/home-layout' },

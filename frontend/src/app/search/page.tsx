@@ -246,6 +246,8 @@ function SearchContent() {
   );
 }
 
+export const dynamic = 'force-dynamic';
+
 export default function SearchPage() {
   return (
     <Suspense

@@ -65,11 +65,23 @@ const socialIcons: Record<string, { label: string; svg: React.ReactNode }> = {
   },
 };
 
-export default function Footer() {
-  const [siteName,    setSiteName]    = useState(DEFAULT_SITE_NAME);
-  const [tagline,     setTagline]     = useState(DEFAULT_TAGLINE);
-  const [description, setDescription] = useState(DEFAULT_DESCRIPTION);
-  const [footerLogo,  setFooterLogo]  = useState(DEFAULT_LOGO_SRC);
+interface FooterProps {
+  initialSiteName?: string;
+  initialTagline?: string;
+  initialDescription?: string;
+  initialFooterLogo?: string;
+}
+
+export default function Footer({
+  initialSiteName,
+  initialTagline,
+  initialDescription,
+  initialFooterLogo,
+}: FooterProps) {
+  const [siteName,    setSiteName]    = useState(initialSiteName || DEFAULT_SITE_NAME);
+  const [tagline,     setTagline]     = useState(initialTagline || DEFAULT_TAGLINE);
+  const [description, setDescription] = useState(initialDescription || DEFAULT_DESCRIPTION);
+  const [footerLogo,  setFooterLogo]  = useState(initialFooterLogo || DEFAULT_LOGO_SRC);
   const [socialLinks, setSocialLinks] = useState<Record<string, string>>({});
   const preview = useSiteSettingsPreview();
 
@@ -116,7 +128,7 @@ export default function Footer() {
                   if (e.currentTarget.src.endsWith(DEFAULT_LOGO_SRC)) return;
                   e.currentTarget.src = DEFAULT_LOGO_SRC;
                 }}
-                className="h-12 w-auto max-w-[160px] object-contain shrink-0" />
+                className="h-24 w-auto max-w-[320px] object-contain shrink-0" />
               <div>
                 <span className="block text-xl font-extrabold text-white tracking-wide">{displaySiteName}</span>
                 <span className="block text-[11px] text-white/45 mt-0.5">{displayTagline}</span>

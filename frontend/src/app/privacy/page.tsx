@@ -1,6 +1,8 @@
 import type { Metadata } from 'next';
 import Breadcrumb from '@/components/ui/Breadcrumb';
 
+export const dynamic = 'force-dynamic';
+
 export const metadata: Metadata = {
   title: 'Privacy Policy | ஊரும் உறவும்',
   description: 'Oorum Uravum privacy policy — how we collect, use, and protect your information',

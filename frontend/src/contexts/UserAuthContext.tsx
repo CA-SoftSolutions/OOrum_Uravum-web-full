@@ -30,6 +30,8 @@ type RegistrationData = {
   confirmPassword: string;
 };
 
+const API_URL = (process.env.NEXT_PUBLIC_API_URL || 'http://localhost:4000/api').replace(/\/+$/, '');
+
 async function responseError(response: Response, fallback: string): Promise<Error> {
   const body = await response.json().catch(() => ({ error: { message: fallback } }));
   return new Error(body.error?.message || fallback);
@@ -65,7 +67,7 @@ export function UserAuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const login = useCallback(async (email: string, password: string) => {
-    const res = await fetch('/api/public-auth/login', {
+    const res = await fetch(`${API_URL}/public-auth/login`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ email, password }),
@@ -81,7 +83,7 @@ export function UserAuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const requestRegistrationCode = useCallback(async (data: RegistrationData) => {
-    const res = await fetch('/api/public-auth/register-request-code', {
+    const res = await fetch(`${API_URL}/public-auth/register/request-code`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(data),
@@ -92,7 +94,7 @@ export function UserAuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const verifyRegistrationCode = useCallback(async (data: RegistrationData & { verificationCode: string }) => {
-    const res = await fetch('/api/public-auth/register-verify-code', {
+    const res = await fetch(`${API_URL}/public-auth/register/verify-code`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(data),
@@ -108,7 +110,7 @@ export function UserAuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const loginWithGoogle = useCallback(async (credential: string) => {
-    const res = await fetch('/api/public-auth/google', {
+    const res = await fetch(`${API_URL}/public-auth/google`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ credential }),

@@ -47,7 +47,41 @@ model FrontendUser {
   createdAt     DateTime  @default(now()) @map("created_at")
   updatedAt     DateTime  @updatedAt @map("updated_at")
 
+  obituaryFamily       FrontendObituaryFamily?
+  obituaryFamilyAudits FrontendObituaryFamilyAudit[]
+
   @@map("frontend_users")
+}
+
+// Saved obituary family details — one record per frontend user, versioned.
+// `data` is a JSON document:
+// { "spouse": [{"name": "...", "alive": true}], "sonsInLaw": [...], ... }
+model FrontendObituaryFamily {
+  id        String       @id @default(cuid()) @db.VarChar(30)
+  userId    String       @unique @map("user_id") @db.VarChar(30)
+  user      FrontendUser @relation(fields: [userId], references: [id], onDelete: Cascade)
+  data      String       @db.LongText
+  version   Int          @default(1)
+  createdAt DateTime     @default(now()) @map("created_at")
+  updatedAt DateTime     @updatedAt @map("updated_at")
+
+  @@map("frontend_obituary_family")
+}
+
+// Immutable audit trail — one row per save, stores full before/after snapshots.
+model FrontendObituaryFamilyAudit {
+  id         String       @id @default(cuid()) @db.VarChar(30)
+  userId     String       @map("user_id") @db.VarChar(30)
+  user       FrontendUser @relation(fields: [userId], references: [id], onDelete: Cascade)
+  version    Int
+  action     String       @db.VarChar(20) // CREATED | UPDATED
+  beforeData String?      @map("before_data") @db.LongText
+  afterData  String       @map("after_data") @db.LongText
+  createdAt  DateTime     @default(now()) @map("created_at")
+
+  @@index([userId, createdAt])
+  @@index([createdAt])
+  @@map("frontend_obituary_family_audit")
 }
 
 model FrontendEmailVerification {

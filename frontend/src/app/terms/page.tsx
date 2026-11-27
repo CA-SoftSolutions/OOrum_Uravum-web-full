@@ -1,6 +1,8 @@
 import type { Metadata } from 'next';
 import Breadcrumb from '@/components/ui/Breadcrumb';
 
+export const dynamic = 'force-dynamic';
+
 export const metadata: Metadata = {
   title: 'Terms of Service | ஊரும் உறவும்',
   description: 'Oorum Uravum terms of service — rules for using the platform',

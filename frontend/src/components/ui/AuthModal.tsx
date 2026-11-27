@@ -3,6 +3,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useUserAuth } from '@/contexts/UserAuthContext';
 
+const API_URL = (process.env.NEXT_PUBLIC_API_URL || 'http://localhost:4000/api').replace(/\/+$/, '');
+
 interface AuthModalProps {
   isOpen: boolean;
   onClose: () => void;
@@ -40,7 +42,7 @@ export default function AuthModal({ isOpen, onClose }: AuthModalProps) {
   useEffect(() => {
     if (!isOpen) return;
     let active = true;
-    fetch('/api/public-auth/config')
+    fetch(`${API_URL}/public-auth/config`)
       .then(async (response) => {
         if (!response.ok) throw new Error('Could not load sign-in options');
         return response.json();

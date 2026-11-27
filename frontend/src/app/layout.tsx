@@ -7,7 +7,7 @@ import ThemeProvider from "@/components/ui/ThemeProvider";
 import ScrollToTop from "@/components/ui/ScrollToTop";
 import { UserAuthProvider } from "@/contexts/UserAuthContext";
 import { SiteSettingsPreviewProvider } from "@/contexts/SiteSettingsPreviewContext";
-import { getCategories, getSiteSettings, getHomeLayout, parseThemeColors } from "@/services/api";
+import { getCategories, getSiteSettings, getHomeLayout, parseThemeColors, resolveAssetUrl, DEFAULT_LOGO_SRC } from "@/services/api";
 import type { Category, SiteSettings } from "@/services/api";
 import GoogleAnalytics from "@/components/ui/GoogleAnalytics";
 import "./globals.css";
@@ -99,6 +99,8 @@ export default async function RootLayout({
   const initialThemeColors = parseThemeColors(settings.themeColors);
   const popularArticlesSection = homeLayout.find((s) => s.id === 'popularArticles');
   const showPopularArticles = popularArticlesSection ? popularArticlesSection.visible : true;
+  const headerLogoUrl = resolveAssetUrl(settings.headerLogo) ?? DEFAULT_LOGO_SRC;
+  const footerLogoUrl = resolveAssetUrl(settings.footerLogo) ?? DEFAULT_LOGO_SRC;
 
   return (
     <html
@@ -110,10 +112,20 @@ export default async function RootLayout({
         <UserAuthProvider>
           <SiteSettingsPreviewProvider>
             <ThemeProvider initialColors={initialThemeColors}>
-              <Header initialCategories={initialCategories} />
+              <Header
+                initialCategories={initialCategories}
+                initialSiteName={settings.siteTitle}
+                initialTagline={settings.siteTagline}
+                initialHeaderLogo={headerLogoUrl}
+              />
               <main className="flex-1">{children}</main>
               {showPopularArticles && <PopularArticles />}
-              <Footer />
+              <Footer
+                initialSiteName={settings.siteTitle}
+                initialTagline={settings.siteTagline}
+                initialDescription={settings.siteDescription}
+                initialFooterLogo={footerLogoUrl}
+              />
               <GoogleAnalytics initialMeasurementId={settings.analyticsId} />
               <ScrollToTop />
             </ThemeProvider>

@@ -2,6 +2,7 @@
 
 import Link from 'next/link';
 import { useState, useEffect, useRef, useCallback } from 'react';
+import { createPortal } from 'react-dom';
 import { useRouter } from 'next/navigation';
 import {
   getCategories,
@@ -232,19 +233,34 @@ function MobileNavItem({ cat, onClose }: { cat: Category; onClose: () => void })
 }
 
 /* ─── Main Header ─────────────────────────────────────────────────────────── */
-export default function Header({ initialCategories = [] }: { initialCategories?: Category[] }) {
+interface HeaderProps {
+  initialCategories?: Category[];
+  initialSiteName?: string;
+  initialTagline?: string;
+  initialHeaderLogo?: string;
+}
+
+export default function Header({
+  initialCategories = [],
+  initialSiteName,
+  initialTagline,
+  initialHeaderLogo,
+}: HeaderProps) {
   const [menuOpen,      setMenuOpen]      = useState(false);
+  const [scrolled,      setScrolled]      = useState(false);
   const [searchOpen,    setSearchOpen]    = useState(false);
   const [authModalOpen, setAuthModalOpen] = useState(false);
   const [userMenuOpen,  setUserMenuOpen]  = useState(false);
+  const [userMenuPos,   setUserMenuPos]   = useState<{ top: number; left: number } | null>(null);
+  const userMenuDropRef = useRef<HTMLDivElement>(null);
   const [query,         setQuery]         = useState('');
   const [dateStr,       setDateStr]       = useState('');
   const [fallbackCategories, setFallbackCategories] = useState<Category[]>([]);
   const [categoriesError, setCategoriesError] = useState(false);
   const categories = initialCategories.length > 0 ? initialCategories : fallbackCategories;
-  const [siteName,      setSiteName]      = useState(DEFAULT_SITE_NAME);
-  const [tagline,       setTagline]       = useState(DEFAULT_TAGLINE);
-  const [headerLogo,    setHeaderLogo]    = useState(DEFAULT_LOGO_SRC);
+  const [siteName,      setSiteName]      = useState(initialSiteName || DEFAULT_SITE_NAME);
+  const [tagline,       setTagline]       = useState(initialTagline || DEFAULT_TAGLINE);
+  const [headerLogo,    setHeaderLogo]    = useState(initialHeaderLogo || DEFAULT_LOGO_SRC);
   const [headerAds,     setHeaderAds]     = useState<HeaderAd[]>([]);
   const preview = useSiteSettingsPreview();
   const { user, logout } = useUserAuth();
@@ -259,6 +275,19 @@ export default function Header({ initialCategories = [] }: { initialCategories?:
   useEffect(() => {
     const timer = window.setTimeout(() => setDateStr(getCurrentDateTamil()), 0);
     return () => window.clearTimeout(timer);
+  }, []);
+
+  // Collapse the brand rows once the user scrolls so only the menubar stays
+  // pinned. Passive listener — no scroll blocking, no layout thrash.
+  useEffect(() => {
+    const onScroll = () => {
+    const isScrolled = window.scrollY > 8;
+    setScrolled(isScrolled);
+    if (isScrolled) setUserMenuOpen(false);
+  };
+    onScroll();
+    window.addEventListener('scroll', onScroll, { passive: true });
+    return () => window.removeEventListener('scroll', onScroll);
   }, []);
 
   useEffect(() => {
@@ -296,11 +325,14 @@ export default function Header({ initialCategories = [] }: { initialCategories?:
       .catch(() => {});
   }, []);
 
-  // Close user menu on outside click
+  // Close user menu on outside click — the dropdown is portaled to <body>,
+  // so both the trigger wrapper and the portaled panel must be checked.
   useEffect(() => {
     function handle(e: MouseEvent) {
-      if (userMenuRef.current && !userMenuRef.current.contains(e.target as Node))
-        setUserMenuOpen(false);
+      const t = e.target as Node;
+      if (userMenuRef.current?.contains(t)) return;
+      if (userMenuDropRef.current?.contains(t)) return;
+      setUserMenuOpen(false);
     }
     document.addEventListener('mousedown', handle);
     return () => document.removeEventListener('mousedown', handle);
@@ -319,6 +351,12 @@ export default function Header({ initialCategories = [] }: { initialCategories?:
 
   return (
     <header className="sticky top-0 z-50 shadow-md">
+
+      {/* Brand rows collapse on scroll — only the menubar stays pinned.
+          max-h must exceed the tallest content (mobile logo row ~230px). */}
+      <div className={`overflow-hidden transition-[max-height,opacity] duration-300 ease-in-out ${
+        scrolled ? 'max-h-0 opacity-0' : 'max-h-[640px] opacity-100'
+      }`}>
 
       {/* ── Row 1: top utility bar ─────────────────────────────────────────── */}
       <div className="bg-primary-dark">
@@ -339,7 +377,7 @@ export default function Header({ initialCategories = [] }: { initialCategories?:
                 if (e.currentTarget.src.endsWith(DEFAULT_LOGO_SRC)) return;
                 e.currentTarget.src = DEFAULT_LOGO_SRC;
               }}
-              className="h-[75px] w-auto max-w-[170px] object-contain md:h-20 md:max-w-[225px] shrink-0" />
+              className="h-[150px] w-auto max-w-[340px] object-contain md:h-40 md:max-w-[450px] shrink-0" />
             <div className="flex min-w-0 flex-col">
               <span className="truncate text-base font-extrabold text-white tracking-wide leading-tight sm:text-xl md:text-2xl">
                 {displaySiteName}
@@ -369,39 +407,30 @@ export default function Header({ initialCategories = [] }: { initialCategories?:
                   பதிவிடு
                 </Link>
                 <div className="relative" ref={userMenuRef}>
-                  <button onClick={() => setUserMenuOpen(!userMenuOpen)}
+                  <button onClick={() => {
+                    if (!userMenuOpen && userMenuRef.current) {
+                      const r = userMenuRef.current.getBoundingClientRect();
+                      setUserMenuPos({
+                        top: r.bottom + 4,
+                        left: Math.max(8, Math.min(r.right - 192, window.innerWidth - 200)),
+                      });
+                    }
+                    setUserMenuOpen(!userMenuOpen);
+                  }}
                     className="flex items-center gap-2 rounded-full hover:bg-white/10 px-2 py-1 transition-colors">
                     <div className="w-8 h-8 rounded-full bg-accent-red flex items-center justify-center text-white text-sm font-bold">
                       {user.name.charAt(0).toUpperCase()}
                     </div>
                     <span className="text-xs text-white/80 max-w-[120px] truncate">{user.name}</span>
                   </button>
-                  {userMenuOpen && (
-                    <div className="absolute right-0 top-full mt-1 w-48 bg-white rounded-lg shadow-lg ring-1 ring-black/8 py-1 z-50 animate-dropdown">
-                      <div className="px-3 py-2 border-b border-gray-100">
-                        <p className="text-sm font-semibold text-gray-900 truncate">{user.name}</p>
-                        <p className="text-xs text-gray-500 truncate">{user.email}</p>
-                      </div>
-                      <Link href="/profile" onClick={() => setUserMenuOpen(false)}
-                        className="block px-3 py-2 text-sm text-gray-700 hover:bg-gray-50">
-                        சுயவிவரம்
-                      </Link>
-                      <Link href="/submit-obituary" onClick={() => setUserMenuOpen(false)}
-                        className="block px-3 py-2 text-sm text-gray-700 hover:bg-gray-50">
-                        Obituary (அஞ்சலி)
-                      </Link>
-                      <button onClick={() => { logout(); setUserMenuOpen(false); }}
-                        className="block w-full text-left px-3 py-2 text-sm text-red-600 hover:bg-red-50">
-                        வெளியேறு
-                      </button>
-                    </div>
-                  )}
                 </div>
               </div>
             ) : (
               <>
+                {/* Below `xl` this lives inside the slide-down menu instead —
+                    keeps the brand row from crowding on phones/tablets. */}
                 <Link href="/submit-obituary"
-                  className="flex items-center gap-1.5 bg-accent-red text-white px-2.5 sm:px-3 py-2 min-h-[40px] rounded-full text-[11px] sm:text-xs font-bold whitespace-nowrap hover:bg-accent-red/85 transition-colors shrink-0">
+                  className="hidden xl:flex items-center gap-1.5 bg-accent-red text-white px-2.5 sm:px-3 py-2 min-h-[40px] rounded-full text-[11px] sm:text-xs font-bold whitespace-nowrap hover:bg-accent-red/85 transition-colors shrink-0">
                   {/* eslint-disable-next-line @next/next/no-img-element */}
                   <img src="/obituary-icon.svg" alt="" aria-hidden="true"
                     className="h-4 w-4 shrink-0 brightness-0 invert" />
@@ -462,6 +491,29 @@ export default function Header({ initialCategories = [] }: { initialCategories?:
           </div>
         )}
       </div>
+      </div>{/* /collapsible brand rows */}
+
+      {/* ── Mobile scrolled menubar ──────────────────────────────────────────
+          Below `xl` the category nav is hidden and the hamburger lives in the
+          brand row, so once that row collapses a slim bar keeps menu access. */}
+      {scrolled && (
+        <div className="xl:hidden bg-primary-dark border-b border-white/10">
+          <div className="mx-auto flex max-w-7xl items-center gap-3 px-4 py-2">
+            <button onClick={() => setMenuOpen(!menuOpen)}
+              className="flex items-center justify-center w-10 h-10 rounded text-white/80 hover:text-white"
+              aria-label={menuOpen ? 'Close menu' : 'Open menu'} aria-expanded={menuOpen}>
+              <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                {menuOpen
+                  ? <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                  : <path strokeLinecap="round" strokeLinejoin="round" d="M4 6h16M4 12h16M4 18h16" />}
+              </svg>
+            </button>
+            <span className="truncate text-sm font-extrabold text-white tracking-wide">
+              {displaySiteName}
+            </span>
+          </div>
+        </div>
+      )}
 
       {/* ── Row 3: navigation bar ──────────────────────────────────────────── */}
       {/* Row 3 shows only from `xl`. The full category bar needs ~1200px, so it
@@ -602,6 +654,32 @@ export default function Header({ initialCategories = [] }: { initialCategories?:
             )}
           </div>
         </div>
+      )}
+
+      {/* User menu — portaled to <body> so the scroll-collapse wrapper's
+          overflow-hidden cannot clip it. */}
+      {user && userMenuOpen && userMenuPos && createPortal(
+        <div ref={userMenuDropRef}
+          className="fixed w-48 bg-white rounded-lg shadow-lg ring-1 ring-black/8 py-1 z-[70] animate-dropdown"
+          style={{ top: userMenuPos.top, left: userMenuPos.left }}>
+          <div className="px-3 py-2 border-b border-gray-100">
+            <p className="text-sm font-semibold text-gray-900 truncate">{user.name}</p>
+            <p className="text-xs text-gray-500 truncate">{user.email}</p>
+          </div>
+          <Link href="/profile" onClick={() => setUserMenuOpen(false)}
+            className="block px-3 py-2 text-sm text-gray-700 hover:bg-gray-50">
+            சுயவிவரம்
+          </Link>
+          <Link href="/submit-obituary" onClick={() => setUserMenuOpen(false)}
+            className="block px-3 py-2 text-sm text-gray-700 hover:bg-gray-50">
+            Obituary (அஞ்சலி)
+          </Link>
+          <button onClick={() => { logout(); setUserMenuOpen(false); }}
+            className="block w-full text-left px-3 py-2 text-sm text-red-600 hover:bg-red-50">
+            வெளியேறு
+          </button>
+        </div>,
+        document.body,
       )}
 
       <AuthModal isOpen={authModalOpen} onClose={() => setAuthModalOpen(false)} />

@@ -64,6 +64,8 @@ function formatDate(dateStr: string): string {
   });
 }
 
+export const dynamic = 'force-dynamic';
+
 export default function ProfilePage() {
   const { user, token, loading: authLoading, logout } = useUserAuth();
   const [authModalOpen, setAuthModalOpen] = useState(false);
