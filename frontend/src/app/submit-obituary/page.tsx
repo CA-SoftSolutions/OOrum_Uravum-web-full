@@ -6,6 +6,7 @@ import { useUserAuth } from '@/contexts/UserAuthContext';
 import AuthModal from '@/components/ui/AuthModal';
 import Breadcrumb from '@/components/ui/Breadcrumb';
 import FamilyMembersInput, { FamilyPerson, serializeFamilyPersons, parseFamilyPersons } from '@/components/ui/FamilyMembersInput';
+import ConfirmDialog from '@/components/ui/ConfirmDialog';
 
 const API_URL = (process.env.NEXT_PUBLIC_API_URL || 'http://localhost:4000/api').replace(/\/+$/, '');
 
@@ -134,6 +135,7 @@ export default function SubmitObituaryPage() {
   const [familyMessage, setFamilyMessage] = useState('');
   const [editingObituary, setEditingObituary] = useState<EditingObituary | null>(null);
   const [editLoading, setEditLoading] = useState(false);
+  const [confirmDeleteFamily, setConfirmDeleteFamily] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const dropZoneRef = useRef<HTMLDivElement>(null);
 
@@ -190,8 +192,8 @@ export default function SubmitObituaryPage() {
           const obit = await res.json();
           if (cancelled) return;
           applyObituaryToForm(obit);
-          setEditingObituary({ id: obit.id, status: obit.status, hasPhoto: !!(obit.imageMimeType || obit.imageUrl) });
-          if (obit.imageMimeType || obit.imageUrl) {
+          setEditingObituary({ id: obit.id, status: obit.status, hasPhoto: !!obit.imageMimeType });
+          if (obit.imageMimeType) {
             setImagePreview(`${API_URL}/obituaries/${obit.id}/image`);
           }
         })
@@ -289,7 +291,7 @@ export default function SubmitObituaryPage() {
 
   const handleDeleteFamily = async () => {
     if (!token || !selectedFamilyId) return;
-    if (!confirm('இந்தச் சேமித்த குடும்ப விவரங்களை நீக்கவா?')) return;
+    setConfirmDeleteFamily(false);
     setFamilyBusy(true);
     setFamilyMessage('');
     try {
@@ -619,7 +621,7 @@ export default function SubmitObituaryPage() {
                 {selectedFamily && (
                   <button
                     type="button"
-                    onClick={handleDeleteFamily}
+                    onClick={() => setConfirmDeleteFamily(true)}
                     disabled={familyBusy}
                     className="px-4 py-2 border border-red-300 text-red-600 rounded-lg text-xs font-bold hover:bg-red-50 disabled:opacity-50 transition-colors"
                   >
@@ -1102,6 +1104,16 @@ export default function SubmitObituaryPage() {
         </form>
       </div>
       <AuthModal isOpen={authModalOpen} onClose={() => setAuthModalOpen(false)} />
+      <ConfirmDialog
+        isOpen={confirmDeleteFamily}
+        title="சேமிப்பை நீக்கவா?"
+        message={`"${selectedFamily?.label || 'குடும்ப விவரங்கள்'}" சேமிப்பை நிரந்தரமாக நீக்கப்படும். தொடரவா?`}
+        confirmLabel="நீக்கு"
+        danger
+        busy={familyBusy}
+        onConfirm={handleDeleteFamily}
+        onCancel={() => setConfirmDeleteFamily(false)}
+      />
     </main>
   );
 }

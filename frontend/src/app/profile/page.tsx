@@ -5,6 +5,7 @@ import Link from 'next/link';
 import { useUserAuth } from '@/contexts/UserAuthContext';
 import AuthModal from '@/components/ui/AuthModal';
 import Breadcrumb from '@/components/ui/Breadcrumb';
+import ConfirmDialog from '@/components/ui/ConfirmDialog';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:4000/api';
 
@@ -81,6 +82,8 @@ export default function ProfilePage() {
   const [profile, setProfile] = useState<Profile | null>(null);
   const [activity, setActivity] = useState<Activity | null>(null);
   const [familyEntries, setFamilyEntries] = useState<FamilyEntry[]>([]);
+  const [deleteFamilyTarget, setDeleteFamilyTarget] = useState<FamilyEntry | null>(null);
+  const [familyBusy, setFamilyBusy] = useState(false);
   const [loadingData, setLoadingData] = useState(true);
   const [error, setError] = useState('');
 
@@ -130,6 +133,33 @@ export default function ProfilePage() {
     setEditAddress(profile?.address ?? '');
     setSaveMessage('');
     setEditing(true);
+  };
+
+  const handleDeleteFamily = async () => {
+    if (!token || !deleteFamilyTarget) return;
+    const target = deleteFamilyTarget;
+    setFamilyBusy(true);
+    try {
+      const res = await fetch(`${API_URL}/public-auth/family-details/${encodeURIComponent(target.id)}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (res.status === 401) {
+        logout();
+        return;
+      }
+      if (!res.ok) {
+        const body = await res.json().catch(() => null);
+        setError(body?.error?.message || 'சேமிப்பை நீக்க முடியவில்லை.');
+        return;
+      }
+      setFamilyEntries((prev) => prev.filter((e) => e.id !== target.id));
+      setDeleteFamilyTarget(null);
+    } catch {
+      setError('சேமிப்பை நீக்க முடியவில்லை. மீண்டும் முயற்சிக்கவும்.');
+    } finally {
+      setFamilyBusy(false);
+    }
   };
 
   const saveProfile = async () => {
@@ -404,18 +434,38 @@ export default function ProfilePage() {
                       v{e.version} · {memberCount} உறுப்பினர்கள் · {formatDate(e.updatedAt)}
                     </p>
                   </div>
-                  <Link
-                    href={`/submit-obituary?family=${e.id}`}
-                    className="text-xs text-accent-red font-semibold hover:underline shrink-0"
-                  >
-                    திருத்து / Use
-                  </Link>
+                  <div className="flex items-center gap-3 shrink-0">
+                    <Link
+                      href={`/submit-obituary?family=${e.id}`}
+                      className="text-xs text-accent-red font-semibold hover:underline"
+                    >
+                      திருத்து / Use
+                    </Link>
+                    <button
+                      type="button"
+                      onClick={() => setDeleteFamilyTarget(e)}
+                      className="text-xs text-red-500 font-semibold hover:underline"
+                    >
+                      நீக்கு
+                    </button>
+                  </div>
                 </div>
               );
             })}
           </div>
         )}
       </div>
+
+      <ConfirmDialog
+        isOpen={!!deleteFamilyTarget}
+        title="சேமிப்பை நீக்கவா?"
+        message={`"${deleteFamilyTarget?.label || 'குடும்ப விவரங்கள்'}" சேமிப்பை நிரந்தரமாக நீக்கப்படும். தொடரவா?`}
+        confirmLabel="நீக்கு"
+        danger
+        busy={familyBusy}
+        onConfirm={handleDeleteFamily}
+        onCancel={() => setDeleteFamilyTarget(null)}
+      />
     </main>
   );
 }
