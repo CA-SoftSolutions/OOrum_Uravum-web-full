@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
 import { useAuth } from '@/contexts/AuthContext';
 import { adminFetch, AdminApiError, toQueryString } from '@/lib/api';
 
@@ -33,6 +33,12 @@ interface PaginatedAudit {
   totalPages: number;
 }
 
+interface AuditUser {
+  id: string;
+  name: string;
+  email: string;
+}
+
 const FIELD_LABELS: Record<string, string> = {
   spouse: "Wife's / Husband's Name",
   sonsInLaw: "Son(s)-in-Law / Son's Wife",
@@ -43,6 +49,9 @@ const FIELD_LABELS: Record<string, string> = {
   daughters: 'Daughter(s)',
   grandchildren: "Grandchildren's",
 };
+
+const ACTIONS = ['CREATED', 'UPDATED', 'DELETED'] as const;
+const PAGE_SIZES = [10, 20, 50];
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -72,6 +81,18 @@ function renderData(data: FamilyData | null | undefined) {
   );
 }
 
+function pageWindow(page: number, totalPages: number): (number | '…')[] {
+  if (totalPages <= 7) return Array.from({ length: totalPages }, (_, i) => i + 1);
+  const pages = new Set<number>([1, totalPages, page - 1, page, page + 1]);
+  const sorted = [...pages].filter((p) => p >= 1 && p <= totalPages).sort((a, b) => a - b);
+  const out: (number | '…')[] = [];
+  for (let i = 0; i < sorted.length; i++) {
+    if (i > 0 && sorted[i] - sorted[i - 1] > 1) out.push('…');
+    out.push(sorted[i]);
+  }
+  return out;
+}
+
 // ─── Component ───────────────────────────────────────────────────────────────
 
 export default function FamilyAuditPage() {
@@ -80,16 +101,43 @@ export default function FamilyAuditPage() {
   const [loading, setLoading] = useState(true);
   const [listError, setListError] = useState('');
   const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(20);
   const [totalPages, setTotalPages] = useState(1);
   const [total, setTotal] = useState(0);
   const [expanded, setExpanded] = useState<string | null>(null);
+
+  // Filters
+  const [users, setUsers] = useState<AuditUser[]>([]);
+  const [userId, setUserId] = useState('');
+  const [action, setAction] = useState('');
+  const [searchInput, setSearchInput] = useState('');
+  const [q, setQ] = useState('');
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Load filterable users once
+  useEffect(() => {
+    if (!token) return;
+    adminFetch<{ data: AuditUser[] }>('/public-auth/admin/family-audit/users', { token })
+      .then((d) => setUsers(d.data))
+      .catch(() => {});
+  }, [token]);
+
+  // Debounce keyword search
+  useEffect(() => {
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    debounceRef.current = setTimeout(() => {
+      setQ(searchInput.trim());
+      setPage(1);
+    }, 400);
+    return () => { if (debounceRef.current) clearTimeout(debounceRef.current); };
+  }, [searchInput]);
 
   const fetchAudit = useCallback(async () => {
     if (!token) return;
     setLoading(true);
     setListError('');
     try {
-      const qs = toQueryString({ page, pageSize: 20 });
+      const qs = toQueryString({ page, pageSize, userId, action, q });
       const data = await adminFetch<PaginatedAudit>(`/public-auth/admin/family-audit${qs}`, { token });
       setEntries(data.data);
       setTotal(data.total);
@@ -100,11 +148,21 @@ export default function FamilyAuditPage() {
     } finally {
       setLoading(false);
     }
-  }, [token, page]);
+  }, [token, page, pageSize, userId, action, q]);
 
   useEffect(() => {
     fetchAudit();
   }, [fetchAudit]);
+
+  const resetFilters = () => {
+    setUserId('');
+    setAction('');
+    setSearchInput('');
+    setQ('');
+    setPage(1);
+  };
+
+  const hasFilters = !!(userId || action || q);
 
   return (
     <div>
@@ -123,6 +181,47 @@ export default function FamilyAuditPage() {
         </button>
       </div>
 
+      {/* Filters */}
+      <div className="bg-white rounded-lg shadow p-4 mb-4 flex flex-col md:flex-row gap-3">
+        <input
+          type="text"
+          value={searchInput}
+          onChange={(e) => setSearchInput(e.target.value)}
+          placeholder="Search label, user, or member name…"
+          className="flex-1 border border-gray-300 rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+        />
+        <select
+          value={userId}
+          onChange={(e) => { setUserId(e.target.value); setPage(1); }}
+          className="border border-gray-300 rounded px-3 py-2 text-sm bg-white"
+        >
+          <option value="">All users</option>
+          {users.map((u) => (
+            <option key={u.id} value={u.id}>
+              {u.name} ({u.email})
+            </option>
+          ))}
+        </select>
+        <select
+          value={action}
+          onChange={(e) => { setAction(e.target.value); setPage(1); }}
+          className="border border-gray-300 rounded px-3 py-2 text-sm bg-white"
+        >
+          <option value="">All actions</option>
+          {ACTIONS.map((a) => (
+            <option key={a} value={a}>{a}</option>
+          ))}
+        </select>
+        {hasFilters && (
+          <button
+            onClick={resetFilters}
+            className="px-3 py-2 border border-gray-300 rounded text-sm text-gray-600 hover:bg-gray-50"
+          >
+            Clear
+          </button>
+        )}
+      </div>
+
       {listError && (
         <div className="bg-red-50 border border-red-200 text-red-700 rounded p-3 mb-4 text-sm">{listError}</div>
       )}
@@ -131,7 +230,7 @@ export default function FamilyAuditPage() {
         <p className="text-gray-500">Loading…</p>
       ) : entries.length === 0 ? (
         <div className="bg-white rounded-lg shadow p-8 text-center text-gray-500">
-          No family detail saves recorded yet.
+          {hasFilters ? 'No audit entries match the current filters.' : 'No family detail saves recorded yet.'}
         </div>
       ) : (
         <div className="space-y-3">
@@ -185,25 +284,54 @@ export default function FamilyAuditPage() {
         </div>
       )}
 
+      {/* Pagination */}
       {totalPages > 1 && (
-        <div className="flex items-center justify-center gap-3 mt-6">
-          <button
-            onClick={() => setPage((p) => Math.max(1, p - 1))}
-            disabled={page <= 1}
-            className="px-4 py-2 border rounded text-sm disabled:opacity-40"
-          >
-            Previous
-          </button>
-          <span className="text-sm text-gray-600">
-            Page {page} of {totalPages}
-          </span>
-          <button
-            onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
-            disabled={page >= totalPages}
-            className="px-4 py-2 border rounded text-sm disabled:opacity-40"
-          >
-            Next
-          </button>
+        <div className="flex flex-col sm:flex-row items-center justify-between gap-3 mt-6">
+          <div className="flex items-center gap-2 text-sm text-gray-600">
+            <span>Rows per page:</span>
+            <select
+              value={pageSize}
+              onChange={(e) => { setPageSize(Number(e.target.value)); setPage(1); }}
+              className="border border-gray-300 rounded px-2 py-1 text-sm bg-white"
+            >
+              {PAGE_SIZES.map((s) => (
+                <option key={s} value={s}>{s}</option>
+              ))}
+            </select>
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setPage((p) => Math.max(1, p - 1))}
+              disabled={page <= 1 || loading}
+              className="px-3 py-1.5 border rounded text-sm disabled:opacity-40"
+            >
+              Previous
+            </button>
+            {pageWindow(page, totalPages).map((p, i) =>
+              p === '…' ? (
+                <span key={`e${i}`} className="px-2 text-gray-400">…</span>
+              ) : (
+                <button
+                  key={p}
+                  onClick={() => setPage(p)}
+                  disabled={loading}
+                  className={`px-3 py-1.5 border rounded text-sm ${
+                    p === page ? 'bg-blue-600 text-white border-blue-600' : 'hover:bg-gray-50'
+                  }`}
+                >
+                  {p}
+                </button>
+              ),
+            )}
+            <button
+              onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+              disabled={page >= totalPages || loading}
+              className="px-3 py-1.5 border rounded text-sm disabled:opacity-40"
+            >
+              Next
+            </button>
+          </div>
+          <span className="text-sm text-gray-500">Page {page} of {totalPages}</span>
         </div>
       )}
     </div>

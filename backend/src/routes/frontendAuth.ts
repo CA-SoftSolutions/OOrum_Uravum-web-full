@@ -5,6 +5,7 @@ import crypto from 'crypto';
 import { z } from 'zod';
 import rateLimit from 'express-rate-limit';
 import { prisma } from '../lib/prisma';
+import { Prisma } from '@prisma/client';
 import { sanitizeText } from '../lib/sanitize';
 import { requireAuth, requireRole, AuthenticatedRequest } from '../lib/auth';
 import { emailVerificationLimits, isEmailDeliveryConfigured, sendSignupVerificationEmail } from '../lib/emailVerification';
@@ -814,15 +815,51 @@ router.delete('/family-details/:id', async (req: Request, res: Response) => {
 
 // ─── Admin: family details audit trail ───────────────────────────────────────
 
+// GET /admin/family-audit/users — distinct users who appear in the audit trail (CMS admin)
+router.get('/admin/family-audit/users', requireAuth, requireRole('ADMIN'), async (_req: AuthenticatedRequest, res: Response) => {
+  try {
+    const rows = await prisma.frontendObituaryFamilyAudit.findMany({
+      distinct: ['userId'],
+      select: { user: { select: { id: true, name: true, email: true } } },
+    });
+    res.json({
+      data: rows
+        .map((r) => r.user)
+        .filter((u): u is { id: string; name: string; email: string } => !!u)
+        .sort((a, b) => a.name.localeCompare(b.name)),
+    });
+  } catch (err) {
+    console.error('[frontendAuth] admin/family-audit/users error:', err);
+    res.status(500).json({ error: { code: 'INTERNAL_ERROR', message: 'Failed to load audit users' } });
+  }
+});
+
 // GET /admin/family-audit — paginated audit entries with user info (CMS admin)
+// Query params: page, pageSize, userId, action (CREATED|UPDATED|DELETED), q (keyword)
 router.get('/admin/family-audit', requireAuth, requireRole('ADMIN'), async (req: AuthenticatedRequest, res: Response) => {
   try {
     const page = Math.max(1, parseInt(req.query.page as string) || 1);
     const pageSize = Math.min(50, Math.max(1, parseInt(req.query.pageSize as string) || 20));
-    const userId = (req.query.userId as string || '').trim();
+    const userId = (req.query.userId as string || '').trim().slice(0, 30);
+    const action = (req.query.action as string || '').trim().toUpperCase().slice(0, 20);
+    const q = (req.query.q as string || '').trim().slice(0, 100);
     const offset = (page - 1) * pageSize;
 
-    const where = userId ? { userId } : {};
+    const conditions: Prisma.FrontendObituaryFamilyAuditWhereInput[] = [];
+    if (userId) conditions.push({ userId });
+    if (['CREATED', 'UPDATED', 'DELETED'].includes(action)) conditions.push({ action });
+    if (q) {
+      conditions.push({
+        OR: [
+          { label: { contains: q } },
+          { user: { is: { OR: [{ name: { contains: q } }, { email: { contains: q } }] } } },
+          { afterData: { contains: q } },
+          { beforeData: { contains: q } },
+        ],
+      });
+    }
+    const where: Prisma.FrontendObituaryFamilyAuditWhereInput =
+      conditions.length ? { AND: conditions } : {};
     const [rows, total] = await Promise.all([
       prisma.frontendObituaryFamilyAudit.findMany({
         where,

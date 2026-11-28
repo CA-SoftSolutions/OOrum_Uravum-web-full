@@ -172,6 +172,9 @@ export default function SubmitObituaryPage() {
           const sel = entries.find((e) => e.id === familyParam)!;
           setFamilyLabel(sel.label);
           applyFamilyData(sel.data);
+          setFamilyMessage(`"${sel.label || 'குடும்ப விவரங்கள்'}" ஏற்றப்பட்டது — மாற்றிய பிறகு சேமிக்கவும்.`);
+        } else if (familyParam) {
+          setFamilyMessage('அந்தச் சேமித்த பதிவு கிடைக்கவில்லை.');
         }
       })
       .catch(() => {});
