@@ -131,6 +131,15 @@ const publicSubmitSchema = z.object({
   path: ['dateOfDeath'],
 });
 
+// Draft schema — same fields as publicSubmitSchema but nothing is required;
+// used for "Save as Draft" so users can store partial obituary data.
+const draftObituarySchema = z.object({
+  photo: z.any().optional(),
+  name: z.string().optional(),
+  content: z.string().optional(),
+  ...obituaryDetailFields,
+}).superRefine(validateObituaryDates);
+
 const updateObituarySchema = z.object({
   name: z.string().min(1).optional(),
   content: z.string().min(1).optional(),
@@ -330,7 +339,10 @@ router.put(
     });
   },
   async (req: FrontendAuthenticatedRequest, res: Response) => {
-    const parsed = publicSubmitSchema.safeParse(req.body);
+    // ?draft=1 saves without review and keeps/sets status DRAFT; otherwise the
+    // edit is validated as a full submission and returns to PENDING.
+    const saveAsDraft = req.query.draft === '1';
+    const parsed = (saveAsDraft ? draftObituarySchema : publicSubmitSchema).safeParse(req.body);
     if (!parsed.success) {
       res.status(400).json({
         error: { code: 'VALIDATION_ERROR', message: 'Invalid data', details: parsed.error.flatten().fieldErrors as Record<string, string[]> },
@@ -353,18 +365,18 @@ router.put(
       const displayName = [data.firstName, data.middleName, data.surname]
         .filter(Boolean)
         .join(' ')
-        .trim() || data.name || data.firstName;
+        .trim() || data.name || data.firstName || 'Obituary Draft';
 
       const obituary = await prisma.obituary.update({
         where: { id: existing.id },
         data: {
           name: displayName,
           content: data.lifeStory || data.content || '',
-          // Owner edits always go back through admin review
-          status: 'PENDING',
+          // Draft saves stay private; full edits go back through admin review
+          status: saveAsDraft ? 'DRAFT' : 'PENDING',
           frontendUserId: user.id,
           imageMimeType: req.file ? getImageMimeType(req.file) : undefined,
-          firstName: data.firstName,
+          firstName: data.firstName || null,
           // Optional fields: absent/empty in the request clears the stored value
           middleName: data.middleName || null,
           surname: data.surname || null,
@@ -458,6 +470,105 @@ router.get('/:id/image', async (req: Request, res: Response) => {
 });
 
 // â”€â”€â”€ POST /submit â€” Public obituary submission (no auth required) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+// ─── POST /drafts — Save an obituary as a private draft (owner only) ─────────
+
+const draftRateLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  limit: 60,
+  standardHeaders: 'draft-7',
+  legacyHeaders: false,
+  handler: (_req: Request, res: Response) => {
+    res.status(429).json({
+      error: { code: 'RATE_LIMIT_EXCEEDED', message: 'Too many draft saves. Please try again later.' },
+    });
+  },
+});
+
+router.post(
+  '/drafts',
+  draftRateLimiter,
+  requireFrontendUser,
+  (req: Request, res: Response, next) => {
+    upload.single('photo')(req, res, (err) => {
+      if (err) {
+        if (err instanceof multer.MulterError && err.code === 'LIMIT_FILE_SIZE') {
+          res.status(400).json({ error: { code: 'FILE_TOO_LARGE', message: 'File exceeds 5MB' } });
+          return;
+        }
+        res.status(400).json({ error: { code: 'UPLOAD_ERROR', message: err.message } });
+        return;
+      }
+      next();
+    });
+  },
+  async (req: FrontendAuthenticatedRequest, res: Response) => {
+    const parsed = draftObituarySchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({
+        error: { code: 'VALIDATION_ERROR', message: 'Invalid data', details: parsed.error.flatten().fieldErrors as Record<string, string[]> },
+      });
+      return;
+    }
+
+    try {
+      const data = parsed.data;
+      const user = req.frontendUser!;
+      const displayName = [data.firstName, data.middleName, data.surname]
+        .filter(Boolean)
+        .join(' ')
+        .trim() || data.name || 'Obituary Draft';
+      const slug = await generateUniqueSlug(displayName, 'obituary');
+
+      const obituary = await prisma.obituary.create({
+        data: {
+          name: displayName,
+          slug,
+          content: data.lifeStory || data.content || '',
+          status: 'DRAFT',
+          submitterName: user.name,
+          submitterEmail: user.email,
+          frontendUserId: user.id,
+          publishedAt: new Date(),
+          imageMimeType: getImageMimeType(req.file),
+          firstName: data.firstName || null,
+          middleName: data.middleName || null,
+          surname: data.surname || null,
+          otherNames: data.otherNames || null,
+          dateOfBirth: data.dateOfBirth ? new Date(data.dateOfBirth) : null,
+          dateOfDeath: data.dateOfDeath ? new Date(data.dateOfDeath) : null,
+          placeOfBirth: data.placeOfBirth || null,
+          lastResidentialAddress: data.lastResidentialAddress || null,
+          fatherName: data.fatherName || null,
+          motherName: data.motherName || null,
+          maritalStatus: data.maritalStatus || null,
+          spouseName: data.spouseName || null,
+          brothersNames: data.brothersNames || null,
+          sistersNames: data.sistersNames || null,
+          fatherInLawName: data.fatherInLawName || null,
+          motherInLawName: data.motherInLawName || null,
+          sonsNames: data.sonsNames || null,
+          daughtersNames: data.daughtersNames || null,
+          sonsInLawNames: data.sonsInLawNames || null,
+          daughtersInLawNames: data.daughtersInLawNames || null,
+          grandchildrenNames: data.grandchildrenNames || null,
+          occupations: data.occupations || null,
+          hobbiesInterests: data.hobbiesInterests || null,
+          communityActivities: data.communityActivities || null,
+          otherDetails: data.otherDetails || null,
+          lifeStory: data.lifeStory || null,
+          ...(req.file && { imageData: encryptImage(req.file.buffer) as unknown as Uint8Array<ArrayBuffer> }),
+        },
+        select: ownerObituarySelect,
+      });
+
+      res.status(201).json(obituary);
+    } catch (err) {
+      console.error('[obituaries] POST /drafts error:', err);
+      res.status(500).json({ error: { code: 'INTERNAL_ERROR', message: 'Failed to save draft' } });
+    }
+  },
+);
 
 router.post(
   '/submit',

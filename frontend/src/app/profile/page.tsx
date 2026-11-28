@@ -50,6 +50,7 @@ interface FamilyEntry {
 }
 
 const STATUS_LABELS: Record<string, { label: string; className: string }> = {
+  DRAFT: { label: 'வரைவு', className: 'bg-gray-200 text-gray-700' },
   PENDING: { label: 'நிலுவையில்', className: 'bg-yellow-100 text-yellow-800' },
   APPROVED: { label: 'அங்கீகரிக்கப்பட்டது', className: 'bg-green-100 text-green-800' },
   FLAGGED: { label: 'மதிப்பாய்வில்', className: 'bg-orange-100 text-orange-800' },
@@ -406,7 +407,7 @@ export default function ProfilePage() {
           </div>
         )}
         <p className="text-xs text-foreground/40 mt-3">
-          திருத்திய பிறகு இரங்கல் நிர்வாக மதிப்பாய்வுக்கு மீண்டும் அனுப்பப்படும் (நிலுவை நிலைக்குத் திரும்பும்).
+          வரைவுகள் (Drafts) உங்களுக்கு மட்டும் தெரியும் — "திருத்து" அழுத்தி நிரப்பி Submit செய்தால் בלבד மதிப்பாய்வுக்கு செல்லும். சமர்ப்பித்த இரங்கல்களைத் திருத்தினால் மீண்டும் நிர்வாக மதிப்பாய்வுக்கு அனுப்பப்படும்.
         </p>
       </div>
 

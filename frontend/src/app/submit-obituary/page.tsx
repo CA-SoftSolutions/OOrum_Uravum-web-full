@@ -136,6 +136,8 @@ export default function SubmitObituaryPage() {
   const [editingObituary, setEditingObituary] = useState<EditingObituary | null>(null);
   const [editLoading, setEditLoading] = useState(false);
   const [confirmDeleteFamily, setConfirmDeleteFamily] = useState(false);
+  const [confirmClear, setConfirmClear] = useState(false);
+  const [draftMessage, setDraftMessage] = useState('');
   const fileInputRef = useRef<HTMLInputElement>(null);
   const dropZoneRef = useRef<HTMLDivElement>(null);
 
@@ -418,10 +420,17 @@ export default function SubmitObituaryPage() {
       Array.isArray(val) ? val.length > 0 : typeof val === 'string' ? val.trim() !== '' : val !== null
     );
 
-    if (hasData && !confirm('Are you sure you want to clear the form? All data will be lost.')) {
+    if (hasData) {
+      setConfirmClear(true);
       return;
     }
+    doClear();
+  };
 
+  const doClear = () => {
+    setConfirmClear(false);
+    setEditingObituary(null);
+    setDraftMessage('');
     setFormData(initialFormData);
     setImagePreview(null);
     setFieldErrors({});
@@ -429,11 +438,11 @@ export default function SubmitObituaryPage() {
     if (fileInputRef.current) fileInputRef.current.value = '';
   };
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const submitObituary = async (mode: 'submit' | 'draft') => {
     if (authLoading) return;
     setError('');
     setFieldErrors({});
+    setDraftMessage('');
     setSubmitting(true);
 
     try {
@@ -471,14 +480,14 @@ export default function SubmitObituaryPage() {
       if (formData.lifeStory) fd.append('lifeStory', formData.lifeStory);
 
       const isEdit = !!editingObituary;
-      const res = await fetch(
-        isEdit ? `${API_URL}/obituaries/mine/${editingObituary!.id}` : '/api/obituaries/submit',
-        {
-          method: isEdit ? 'PUT' : 'POST',
-          headers: token ? { Authorization: `Bearer ${token}` } : undefined,
-          body: fd,
-        },
-      );
+      const url = mode === 'draft'
+        ? (isEdit ? `${API_URL}/obituaries/mine/${editingObituary!.id}?draft=1` : `${API_URL}/obituaries/drafts`)
+        : (isEdit ? `${API_URL}/obituaries/mine/${editingObituary!.id}` : '/api/obituaries/submit');
+      const res = await fetch(url, {
+        method: isEdit ? 'PUT' : 'POST',
+        headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+        body: fd,
+      });
 
       if (res.status === 401) {
         logout();
@@ -498,7 +507,16 @@ export default function SubmitObituaryPage() {
         throw new Error(data.error?.message || 'Submission failed');
       }
 
-      setSuccess(true);
+      if (mode === 'draft') {
+        const saved = await res.json().catch(() => null);
+        if (saved?.id) {
+          setEditingObituary({ id: saved.id, status: 'DRAFT', hasPhoto: !!saved.imageMimeType });
+        }
+        setDraftMessage('Draft saved — your data is private. Keep editing, then click Submit when ready.');
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+      } else {
+        setSuccess(true);
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Submission failed. Please try again.');
     } finally {
@@ -517,7 +535,7 @@ export default function SubmitObituaryPage() {
         <div className="mt-6 bg-green-50 rounded-2xl p-8 border border-green-200">
           <div className="text-5xl mb-4">✅</div>
           <h1 className="text-xl font-bold text-green-800 mb-2">
-            {editingObituary ? 'Obituary Updated!' : 'Submission Successful!'}
+            {editingObituary?.status === 'DRAFT' ? 'Draft Submitted for Review!' : editingObituary ? 'Obituary Updated!' : 'Submission Successful!'}
           </h1>
           <p className="text-sm text-green-700 mb-4">
             {editingObituary
@@ -593,7 +611,20 @@ export default function SubmitObituaryPage() {
           </p>
         )}
 
-        {editingObituary && (
+        {editingObituary && editingObituary.status === 'DRAFT' && (
+          <div className="mb-6 rounded-xl border border-yellow-300 bg-yellow-50 p-4">
+            <h3 className="text-sm font-bold text-yellow-900">வரைவு (Draft) — yours only</h3>
+            <p className="text-xs text-yellow-800/80 mt-0.5">
+              This draft is private and will not appear on the site. Click &quot;Submit&quot; below to send it for admin review.
+            </p>
+          </div>
+        )}
+        {draftMessage && (
+          <div className="mb-6 rounded-xl border border-green-200 bg-green-50 p-4 text-sm text-green-800" role="status">
+            {draftMessage}
+          </div>
+        )}
+        {editingObituary && editingObituary.status !== 'DRAFT' && (
           <div className="mb-6 rounded-xl border border-blue-200 bg-blue-50/60 p-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
             <div>
               <h3 className="text-sm font-bold text-blue-900">இரங்கலைத் திருத்துகிறது (Edit mode)</h3>
@@ -687,7 +718,7 @@ export default function SubmitObituaryPage() {
           </div>
         )}
 
-        <form onSubmit={handleSubmit} className="space-y-8">
+        <form onSubmit={(e) => { e.preventDefault(); submitObituary('submit'); }} className="space-y-8">
           {/* SECTION 1: Deceased Photo Upload */}
           <div>
             <h2 className="text-lg font-bold text-accent-red mb-4 border-b border-yellow-200 pb-2">
@@ -1097,11 +1128,19 @@ export default function SubmitObituaryPage() {
               Clear Form
             </button>
             <button
+              type="button"
+              onClick={() => submitObituary('draft')}
+              disabled={submitting || authLoading}
+              className="px-6 py-3 border-2 border-yellow-500 text-yellow-700 rounded-lg text-sm font-bold hover:bg-yellow-50 disabled:opacity-50 transition-colors"
+            >
+              {submitting ? 'Saving...' : editingObituary?.status === 'DRAFT' ? 'Update Draft' : 'Save as Draft'}
+            </button>
+            <button
               type="submit"
               disabled={submitting || authLoading}
               className="flex-1 px-6 py-3 bg-accent-red text-white rounded-lg text-sm font-bold hover:bg-accent-red/90 disabled:opacity-50 transition-colors"
             >
-              {submitting ? 'Submitting...' : editingObituary ? 'Update & Resubmit Obituary' : 'Submit Obituary Information'}
+              {submitting ? 'Submitting...' : editingObituary?.status === 'DRAFT' ? 'Submit Draft for Review' : editingObituary ? 'Update & Resubmit Obituary' : 'Submit Obituary Information'}
             </button>
           </div>
         </form>
@@ -1116,6 +1155,15 @@ export default function SubmitObituaryPage() {
         busy={familyBusy}
         onConfirm={handleDeleteFamily}
         onCancel={() => setConfirmDeleteFamily(false)}
+      />
+      <ConfirmDialog
+        isOpen={confirmClear}
+        title="படிவத்தை அழிக்கவா?"
+        message="Are you sure? All entered data will be cleared."
+        confirmLabel="அழி"
+        danger
+        onConfirm={doClear}
+        onCancel={() => setConfirmClear(false)}
       />
     </main>
   );
